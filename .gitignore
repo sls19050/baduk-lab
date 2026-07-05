@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.venv/
+report/
+raw/
+*.sgf
+!tests/fixtures/*.sgf
