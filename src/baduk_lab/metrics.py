@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sgfmill.common import format_vertex
+
 from .engine import GameAnalysis
 
 # Move-number boundaries for phases. Crude but robust; revisit later.
@@ -30,6 +32,16 @@ PROBLEM_THRESHOLD = 4.0
 # Winrate bands for ahead/behind analysis (mover's perspective).
 AHEAD = 0.65
 BEHIND = 0.35
+
+# Magnitude buckets: (label, lower bound inclusive, upper bound exclusive).
+MAGNITUDE_BUCKETS = [
+    ("0-1", 0.0, 1.0),
+    ("1-3", 1.0, 3.0),
+    ("3-8", 3.0, 8.0),
+    ("8+", 8.0, float("inf")),
+]
+BLUNDER_THRESHOLD = 8.0
+LEAK_RANGE = (1.0, 3.0)
 
 
 @dataclass
@@ -66,18 +78,118 @@ class ProblemPosition:
     best: str          # KataGo's preferred move
 
 
+@dataclass
+class _PlayerMove:
+    game: str
+    move_number: int
+    phase: str
+    points_lost: float          # clamped to >= 0; engine noise can go slightly negative
+    winrate_before: float | None
+    played: str
+    best: str
+
+
+def _phase(move_number: int) -> str:
+    if move_number <= OPENING_END:
+        return "opening"
+    if move_number <= MIDDLE_END:
+        return "middle"
+    return "endgame"
+
+
+def _player_moves(analyses: list[GameAnalysis], player: str) -> list[_PlayerMove]:
+    """Every move the player of interest played, across all games, with the
+    points lost and context needed by every metric below."""
+    out = []
+    for analysis in analyses:
+        record = analysis.record
+        color = record.color_of(player)
+        if color is None:
+            continue
+        for move in record.moves:
+            if move.color != color:
+                continue
+            raw_loss = analysis.points_lost(move.number)
+            if raw_loss is None:
+                continue
+            before = analysis.position_at(move.number)
+            best = before.best_moves[0]["move"] if before and before.best_moves else "?"
+            # before.winrate is fixed to Black's perspective; flip it to the
+            # mover's own perspective so "ahead"/"behind" means the player of
+            # interest, not always Black.
+            winrate_before = None
+            if before is not None:
+                winrate_before = before.winrate if color == "b" else 1.0 - before.winrate
+            out.append(_PlayerMove(
+                game=record.path.name,
+                move_number=move.number,
+                phase=_phase(move.number),
+                points_lost=max(0.0, raw_loss),
+                winrate_before=winrate_before,
+                played=format_vertex(move.coord),
+                best=best,
+            ))
+    return out
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
 def phase_loss_distribution(analyses: list[GameAnalysis], player: str) -> PhaseLoss:
-    raise NotImplementedError
+    moves = _player_moves(analyses, player)
+    totals = {"opening": 0.0, "middle": 0.0, "endgame": 0.0}
+    by_phase: dict[str, list[float]] = {"opening": [], "middle": [], "endgame": []}
+    for m in moves:
+        totals[m.phase] += m.points_lost
+        by_phase[m.phase].append(m.points_lost)
+    return PhaseLoss(
+        opening=_mean(by_phase["opening"]),
+        middle=_mean(by_phase["middle"]),
+        endgame=_mean(by_phase["endgame"]),
+        opening_total=totals["opening"],
+        middle_total=totals["middle"],
+        endgame_total=totals["endgame"],
+    )
 
 
 def magnitude_profile(analyses: list[GameAnalysis], player: str) -> MagnitudeProfile:
-    raise NotImplementedError
+    moves = _player_moves(analyses, player)
+    n_games = len({m.game for m in moves})
+    buckets = {label: 0 for label, _, _ in MAGNITUDE_BUCKETS}
+    for m in moves:
+        for label, lo, hi in MAGNITUDE_BUCKETS:
+            if lo <= m.points_lost < hi:
+                buckets[label] += 1
+                break
+    blunders = sum(1 for m in moves if m.points_lost >= BLUNDER_THRESHOLD)
+    leaks = sum(1 for m in moves if LEAK_RANGE[0] <= m.points_lost < LEAK_RANGE[1])
+    return MagnitudeProfile(
+        buckets=buckets,
+        blunders_per_game=blunders / n_games if n_games else 0.0,
+        leak_rate=leaks / len(moves) if moves else 0.0,
+    )
 
 
 def ahead_behind_split(analyses: list[GameAnalysis], player: str) -> AheadBehindSplit:
-    raise NotImplementedError
+    moves = [m for m in _player_moves(analyses, player) if m.winrate_before is not None]
+    ahead = [m.points_lost for m in moves if m.winrate_before >= AHEAD]
+    behind = [m.points_lost for m in moves if m.winrate_before <= BEHIND]
+    close = [m.points_lost for m in moves if BEHIND < m.winrate_before < AHEAD]
+    return AheadBehindSplit(
+        mean_loss_when_ahead=_mean(ahead),
+        mean_loss_when_close=_mean(close),
+        mean_loss_when_behind=_mean(behind),
+    )
 
 
 def problem_positions(analyses: list[GameAnalysis], player: str,
                       threshold: float = PROBLEM_THRESHOLD) -> list[ProblemPosition]:
-    raise NotImplementedError
+    moves = _player_moves(analyses, player)
+    problems = [
+        ProblemPosition(game=m.game, move_number=m.move_number, points_lost=m.points_lost,
+                        played=m.played, best=m.best)
+        for m in moves if m.points_lost >= threshold
+    ]
+    problems.sort(key=lambda p: p.points_lost, reverse=True)
+    return problems

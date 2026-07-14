@@ -52,12 +52,17 @@ Planned, not in MVP:
 - A working KataGo binary and neural network. If you have KaTrain installed,
   you already have both; point the config at KaTrain's copy.
 
-## Usage (target interface, not fully implemented yet)
+## Usage
 
 ```bash
 pip install -e .
-baduk-lab analyze ./my-games/ --player "donghalee" --out report/
+baduk-lab analyze ./my-games/ --player "your-name-in-sgf" --out report/
 ```
+
+`--player` is matched case-insensitively as a substring against the SGF's
+`PB`/`PW` tags, so your server handle is enough. If KaTrain is installed on
+macOS, `--katago`/`--model`/`--config` are auto-detected from its bundled
+install; pass them explicitly otherwise.
 
 Outputs:
 
@@ -74,20 +79,38 @@ report/
 sgf files -> loader.py -> engine.py (KataGo JSON analysis) -> metrics.py -> report.py
                                           |
                                           v
-                                    raw/ cache (JSON)
+                                    raw/ cache (JSON, keyed by SGF hash + model + visits)
 ```
 
-- `loader.py` — SGF parsing (sgfmill), player-of-interest detection, move list
-  extraction, time tags.
-- `engine.py` — thin client for KataGo's JSON analysis engine over stdin/stdout.
-  Caches results per game so KataGo only runs once per SGF.
-- `metrics.py` — pure functions from per-move analysis to diagnosis numbers.
-  No I/O. This is where the interesting logic lives and what tests cover.
-- `report.py` — renders metrics into markdown; extracts problem SGFs.
+- `loader.py` — SGF parsing (sgfmill). Produces a `GameRecord` per file: board
+  size, komi, player names, result, and a flat `Move` list (color, coord,
+  move number, KGS clock tags if present). `color_of()` matches a player
+  handle against `PB`/`PW` to pick which color to diagnose.
+- `engine.py` — `KataGoClient` runs `katago analysis` as a persistent
+  subprocess and queries it once per game (all moves via `analyzeTurns`,
+  not one query per position) over newline-delimited JSON on stdin/stdout.
+  Produces one `PositionAnalysis` per position (winrate, scoreLead, top
+  candidate moves), fixed to Black's perspective; `GameAnalysis.points_lost()`
+  converts to the mover's perspective. Results are cached to
+  `raw/<sgf-stem>.json` keyed by (SGF content hash, model, visits), so a
+  folder of mostly-already-analyzed games only pays for the new ones.
+- `metrics.py` — pure functions from a list of `GameAnalysis` to diagnosis
+  numbers. No I/O; this is what the test suite covers. `_player_moves()`
+  flattens all games into one list of the player's moves with points lost,
+  phase, and perspective-corrected winrate; four functions build on it:
+  `phase_loss_distribution`, `magnitude_profile`, `ahead_behind_split`,
+  `problem_positions`.
+- `report.py` — renders the four metric objects into `report.md` (one
+  plain-language takeaway per section) and `export_problem_sgfs()`, which
+  writes one SGF per problem position — the game up to the mistake, plus
+  sibling variations for what was played vs. KataGo's preferred move, so
+  the answer isn't spoiled on open.
 
 ## Status
 
-Skeleton. Interfaces are sketched, nothing runs end to end yet.
+Working end to end: `baduk-lab analyze` parses a folder of SGFs, runs KataGo
+analysis (cached per game), computes all four MVP metrics, and writes
+`report.md` plus a problem-set SGF per flagged mistake.
 
 ## License
 

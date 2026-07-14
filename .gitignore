@@ -5,3 +5,4 @@ report/
 raw/
 *.sgf
 !tests/fixtures/*.sgf
+/games/
