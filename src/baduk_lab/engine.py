@@ -137,7 +137,7 @@ class KataGoClient:
         if not cache_path.exists():
             return None
         try:
-            payload = json.loads(cache_path.read_text())
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return None
         if payload.get("key") != key:
@@ -150,7 +150,7 @@ class KataGoClient:
             "key": key,
             "positions": [dataclasses.asdict(p) for p in positions],
         }
-        cache_path.write_text(json.dumps(payload, indent=2))
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _query(self, record: GameRecord) -> list[PositionAnalysis]:
         self._ensure_started()

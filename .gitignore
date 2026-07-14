@@ -6,3 +6,4 @@ raw/
 *.sgf
 !tests/fixtures/*.sgf
 /games/
+analysis_logs/

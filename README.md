@@ -40,7 +40,9 @@ Planned, not in MVP:
 - **No server integration / auth.** You download your own SGFs manually.
   Serious players can manage a folder.
 - **No GUI.** This is a CLI that emits markdown + SGF files. Use KaTrain to
-  view the extracted positions.
+  view the extracted positions ([setup guide](KATRAIN_UI_SETUP.md)), or
+  LizzieYzy Next for live/continuous analysis
+  ([setup guide](LIZZIE_UI_SETUP.md)).
 - **No fine-grained claims from small samples.** With 8 games, phase-level and
   magnitude-level statistics are real; "you are weak at attachments in the
   lower left" is tea-leaf reading. The report only makes claims the sample
@@ -50,19 +52,53 @@ Planned, not in MVP:
 
 - Python 3.11+
 - A working KataGo binary and neural network. If you have KaTrain installed,
-  you already have both; point the config at KaTrain's copy.
+  you already have both; point the config at KaTrain's copy. See
+  [KATAGO_SETUP.md](KATAGO_SETUP.md) for a full walkthrough (macOS and
+  Windows) if you need to install one.
+
+## Setup
+
+```bash
+git clone https://github.com/sls19050/baduk-lab.git
+cd baduk-lab
+python -m venv .venv
+```
+
+Activate the virtual environment:
+
+- macOS/Linux: `source .venv/bin/activate`
+- Windows (PowerShell): `.venv\Scripts\Activate.ps1`
+- Windows (cmd.exe): `.venv\Scripts\activate.bat`
+
+Then install:
+
+```bash
+pip install -e .
+```
 
 ## Usage
 
 ```bash
-pip install -e .
 baduk-lab analyze ./my-games/ --player "your-name-in-sgf" --out report/
 ```
 
 `--player` is matched case-insensitively as a substring against the SGF's
-`PB`/`PW` tags, so your server handle is enough. If KaTrain is installed on
-macOS, `--katago`/`--model`/`--config` are auto-detected from its bundled
-install; pass them explicitly otherwise.
+`PB`/`PW` tags, so your server handle is enough.
+
+`--katago`/`--model`/`--config` are auto-detected only when KaTrain is
+installed at its default macOS location (`/Applications/KaTrain.app`).
+**On Windows and Linux, pass all three explicitly** — the Windows KaTrain
+installer lets you pick any install directory, so there's no fixed path to
+guess. If you have KaTrain installed, press `F8` in it to open general
+settings and check the engine command (or set `debug_level=1`) to see the
+exact paths it launches KataGo with, then reuse them:
+
+```powershell
+baduk-lab analyze .\my-games\ --player "your-name-in-sgf" --out report\ `
+  --katago "C:\Path\To\KaTrain\KataGo\katago.exe" `
+  --model "C:\Path\To\KaTrain\KataGo\model.bin.gz" `
+  --config "C:\Path\To\KaTrain\KataGo\analysis_config.cfg"
+```
 
 Outputs:
 

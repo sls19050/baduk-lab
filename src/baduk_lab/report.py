@@ -84,7 +84,7 @@ def render_report(out_dir: Path, *, player: str, analyses: list[GameAnalysis],
                      f"[{filename}](problems/{filename}) |")
 
     report_path = out_dir / "report.md"
-    report_path.write_text("\n".join(lines) + "\n")
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report_path
 
 
