@@ -48,6 +48,22 @@ Planned, not in MVP:
   lower left" is tea-leaf reading. The report only makes claims the sample
   size supports.
 
+## Setting up a new machine from scratch
+
+Order matters here (e.g. after a hardware upgrade): GPU driver/CUDA before
+KataGo, KataGo before either GUI, both before this repo's own install.
+
+1. **GPU driver + KataGo binary/model/config** —
+   [KATAGO_SETUP.md](KATAGO_SETUP.md). If you have an NVIDIA card and want
+   the faster CUDA/TensorRT backends instead of OpenCL, that doc covers the
+   extra driver-version-matching steps.
+2. **A GUI to sanity-check the install** (optional but recommended before
+   trusting baduk-lab's output) —
+   [KATRAIN_UI_SETUP.md](KATRAIN_UI_SETUP.md) for review-oriented use, or
+   [LIZZIE_UI_SETUP.md](LIZZIE_UI_SETUP.md) for live/continuous analysis
+   and HumanSL.
+3. **baduk-lab itself** — the Setup section below.
+
 ## Requirements
 
 - Python 3.11+

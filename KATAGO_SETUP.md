@@ -58,13 +58,52 @@ Pick the build that matches your hardware:
 | Backend | When to use it |
 |---|---|
 | **OpenCL** | Works on almost any semi-modern GPU (NVIDIA, AMD, Intel) without matching driver versions exactly. Good default, especially on older or lower-VRAM GPUs. This is what most Mac installs use, since macOS has no CUDA. |
-| **CUDA** | Fastest on NVIDIA GPUs, but you must match the release's CUDA/cuDNN version to what's installed on your machine. Windows/Linux only. |
+| **CUDA** | Fastest on NVIDIA GPUs, but you must match the release's CUDA/cuDNN version to what's installed on your machine. Windows/Linux only. See [CUDA and TensorRT setup](#cuda-and-tensorrt-setup-nvidia-gpus) below. |
 | **Eigen** | CPU-only, no GPU required. Much slower — fine for testing, painful for analyzing many games. |
 
 - **macOS:** download the macOS build (OpenCL) and unzip it.
 - **Windows:** download the OpenCL `.zip` unless you specifically want CUDA
   and know your installed CUDA/cuDNN versions match a listed build. Unzip
   it anywhere (e.g. `C:\KataGo\`).
+
+### CUDA and TensorRT setup (NVIDIA GPUs)
+
+Skip this if you're using the OpenCL build — it needs no separate runtime.
+CUDA and TensorRT are both faster than OpenCL on NVIDIA cards, but need
+extra components installed and version-matched *before* KataGo will even
+start — a mismatch fails immediately with a DLL-load error, not a slow run.
+
+**CUDA:**
+
+1. Install/update your NVIDIA display driver first (GeForce Experience, or
+   the standalone driver from [nvidia.com/drivers](https://www.nvidia.com/drivers)).
+   Confirm it's active — `nvidia-smi` in a terminal should print your GPU
+   and driver version.
+2. Check the **exact CUDA and cuDNN versions** the KataGo CUDA release you
+   downloaded expects — stated on that release's page on the
+   [KataGo releases page](https://github.com/lightvector/KataGo/releases),
+   not necessarily the newest CUDA available. Installing a newer CUDA than
+   the release supports is the most common cause of the DLL-load failure.
+3. Install the matching [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit-archive)
+   version.
+4. Install the matching [cuDNN](https://developer.nvidia.com/cudnn) version
+   (requires a free NVIDIA Developer account). Copy its DLLs into the CUDA
+   Toolkit's `bin` folder, or directly next to `katago.exe` — either
+   location works as long as they end up next to the binary or on `PATH`.
+5. Run the same verification as the OpenCL build (step 5 below). The first
+   run autotunes cuBLAS/cuDNN kernels the same way OpenCL autotunes — a
+   few minutes once, cached afterward.
+
+**TensorRT** (optional, NVIDIA RTX 20/30/40/50 series only, faster still
+than CUDA): needs the TensorRT SDK installed and matched to your CUDA
+version on top of the above — more setup for more speed. If you're running
+LizzieYzy Next, its **KataGo Auto Setup** wizard (see
+[LIZZIE_UI_SETUP.md](LIZZIE_UI_SETUP.md#katago-auto-setup-and-humansl))
+detects your GPU and can install/manage TensorRT for you under "NVIDIA GPU
+speed" — the easier path if you mainly use LizzieYzy Next. For
+baduk-lab/KaTrain (manual installs), follow KataGo's own TensorRT notes on
+the release page instead; it's not required — OpenCL/CUDA is plenty for
+baduk-lab's batch analysis use case.
 
 ### 2. Download a neural net
 

@@ -62,6 +62,51 @@ and the wrong one fails to start with a `Could not find key '...'` error.
 See the config-file table in [KATAGO_SETUP.md](KATAGO_SETUP.md#3-get-a-config-file)
 if you need a refresher on which file is which.
 
+## KataGo Auto Setup and HumanSL
+
+The manual command above only wires up the **GTP** engine used for
+live/hover analysis. HumanSL (playing against or reviewing with a
+human-style-rated model) and the background whole-game analysis feature
+run on a *separate* engine profile that LizzieYzy Next manages itself via
+a **KataGo Auto Setup** wizard — pasting the manual GTP command does not
+configure this second profile, so it's easy to get regular play working
+and still hit a HumanSL failure.
+
+**Symptom if you skip this:** starting a HumanSL game fails with something
+like:
+
+```
+Failed to start HumanSL engine: Cannot run program "katago" in directory
+"...\human-sl-models": CreateProcess error=2. The system cannot find the
+file specified.
+```
+
+That's LizzieYzy Next falling back to assuming a bundled `katago` binary
+that doesn't exist in the engine-less build — not a sign anything you
+already configured is broken.
+
+**Fix:** open the **"KataGo auto setup"** menu item (also reachable via a
+**"Setup"** button near the engine controls). On the **Overview** tab:
+
+1. Click **"Choose existing KataGo"** → **"Choose the KataGo executable"**
+   and browse to your `katago.exe` (same file as the manual command above).
+2. Confirm it auto-detects the GTP config, analysis config, and weight
+   sitting next to it. If not, use **"Choose gtp.cfg"** / **"Choose a
+   KataGo weight"** to point at them directly.
+3. Check the HumanSL model status on this tab (or the **Weights** tab) —
+   if missing, it offers a direct download; the official model is
+   `b18c384nbt-humanv0.bin.gz`.
+4. Once the overview shows **"Ready to auto-configure now"** with no
+   missing-engine/config/weight warnings, click **"Apply setup"**.
+
+This writes its own engine profile and does not touch or override the
+manual GTP command from the previous section — both coexist.
+
+The same wizard's **"NVIDIA GPU speed"** tab can detect your card and
+install **TensorRT** for faster analysis on RTX 20/30/40/50 series — see
+[KATAGO_SETUP.md](KATAGO_SETUP.md#cuda-and-tensorrt-setup-nvidia-gpus) if
+you want the manual/non-LizzieYzy equivalent for baduk-lab or KaTrain.
+
 ## "analysis.cfg has been missing and has been auto generated" — expected, not an error
 
 LizzieYzy Next actually runs **two separate KataGo processes**: the `gtp`
