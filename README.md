@@ -101,13 +101,23 @@ baduk-lab analyze ./my-games/ --player "your-name-in-sgf" --out report/
 `--player` is matched case-insensitively as a substring against the SGF's
 `PB`/`PW` tags, so your server handle is enough.
 
-`--katago`/`--model`/`--config` are auto-detected only when KaTrain is
-installed at its default macOS location (`/Applications/KaTrain.app`).
-**On Windows and Linux, pass all three explicitly** — the Windows KaTrain
-installer lets you pick any install directory, so there's no fixed path to
-guess. If you have KaTrain installed, press `F8` in it to open general
-settings and check the engine command (or set `debug_level=1`) to see the
-exact paths it launches KataGo with, then reuse them:
+`--katago`/`--model`/`--config` are auto-detected in two cases, checked in
+this order:
+
+1. **This repo has its own local KataGo install** — a `katago/` folder (plus
+   optionally faster `katago-cuda/`/`katago-trt/` sibling folders) sitting
+   next to this repo's root, set up per [KATAGO_SETUP.md](KATAGO_SETUP.md).
+   If more than one of `katago-trt/`, `katago-cuda/`, `katago/` exists,
+   the fastest one present is used automatically — no flag needed either
+   way.
+2. **KaTrain is installed at its default macOS location**
+   (`/Applications/KaTrain.app`).
+
+Anywhere else (Windows/Linux without a local `katago/` folder in this repo,
+or a KaTrain install in a custom directory), pass all three explicitly. If
+you have KaTrain installed, press `F8` in it to open general settings and
+check the engine command (or set `debug_level=1`) to see the exact paths it
+launches KataGo with, then reuse them:
 
 ```powershell
 baduk-lab analyze .\my-games\ --player "your-name-in-sgf" --out report\ `

@@ -52,6 +52,19 @@ if it also asks for a name/label, anything works, e.g. `KataGo (local)`):
 Keep the quotes exactly as shown — they matter if your path has spaces in
 it (e.g. a username with a space, or a folder like "Local Dev").
 
+Concrete worked example, using the fastest build from a `katago-trt/` +
+`katago/` layout set up per
+[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-per-backend)
+(swap in your own base path and net filename):
+
+```
+"C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago-trt\katago.exe" gtp -model "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\models\kata1-zhizi-b40c768nbt-s11272M-d5935M.bin" -config "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\default_gtp.cfg"
+```
+
+Using the plain `.bin` net (if you have both `.bin` and `.bin.gz` sitting
+in `models/`) skips a gzip-decompress on every engine launch — free
+startup time, no downside.
+
 **Important:** use `default_gtp.cfg`, not `analysis_example.cfg`, in that
 command. Live/interactive play in LizzieYzy Next talks to KataGo over the
 **GTP** protocol (with `kata-analyze` extensions) rather than the JSON

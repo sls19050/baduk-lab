@@ -105,6 +105,87 @@ baduk-lab/KaTrain (manual installs), follow KataGo's own TensorRT notes on
 the release page instead; it's not required — OpenCL/CUDA is plenty for
 baduk-lab's batch analysis use case.
 
+### Windows: getting the CUDA/cuDNN DLLs without the NVIDIA installer
+
+The official path above (install the CUDA Toolkit, install cuDNN, copy
+DLLs) works, but both installers are large, need admin/UAC elevation, and
+cuDNN's direct download is gated behind an NVIDIA Developer account login.
+There's a lighter-weight route for just the **runtime DLLs** KataGo
+actually needs (no compiler, no dev headers, no login): NVIDIA publishes
+them as ordinary pip wheels, and a wheel is just a zip — you don't even
+need to `pip install` anything, just download and unzip.
+
+1. Find the KataGo Windows CUDA build you want on the
+   [releases page](https://github.com/lightvector/KataGo/releases) — the
+   filename tells you the exact versions to match, e.g.
+   `katago-v1.17.1-cuda12.8-cudnn9.8.0-windows-x64.zip` means CUDA 12.8 and
+   cuDNN 9.8.0.
+2. Download the matching wheels from PyPI (substitute the versions from
+   step 1): `nvidia-cuda-runtime-cu12`, `nvidia-cublas-cu12`,
+   `nvidia-cudnn-cu12`, and `nvidia-cuda-nvrtc-cu12` (NVRTC isn't in the
+   KataGo filename but the CUDA/TensorRT backend needs it at runtime
+   anyway — a `nvrtc64_120_0.dll: cannot open shared object file` error at
+   startup means this one's missing). Check available versions at
+   `https://pypi.org/project/<package-name>/#history`, then grab the
+   Windows wheel — either `pip download <package>==<version>` into a scratch
+   folder, or fetch the `.whl` URL directly from that version's page (it's
+   the file ending `-win_amd64.whl`).
+3. Each `.whl` is a zip with the DLLs under `nvidia/<component>/bin/`.
+   Extract just those and copy them next to `katago.exe`.
+
+**TensorRT is the exception** — unlike CUDA/cuBLAS/cuDNN/NVRTC, the actual
+TensorRT libraries are *not* published as real Windows wheels on PyPI (the
+`tensorrt-cu12`/`tensorrt-cu13` packages exist, but the sub-package holding
+the actual `.dll`s — `tensorrt-cu12-libs` — only ships a stub source
+distribution for Windows, no prebuilt wheel). For TensorRT specifically you
+do need the manual, login-gated download:
+
+1. Go to [developer.nvidia.com/tensorrt/download](https://developer.nvidia.com/tensorrt/download),
+   log in, and accept the license.
+2. Click through to **"TensorRT 10"** (KataGo's TensorRT builds target the
+   10.x line — don't grab 11 unless you've confirmed a matching KataGo
+   release exists).
+3. Pick the **GA version matching the CUDA version** of the KataGo TensorRT
+   build you want — e.g. `katago-v1.17.1-trt10.9.0-cuda12.8-windows-x64.zip`
+   pairs with **TensorRT 10.9 GA**. Reuse whichever CUDA version you
+   already have the runtime DLLs for (previous section) rather than
+   chasing the newest TensorRT — a newer TensorRT usually means a newer
+   CUDA pairing too, which means redownloading the CUDA runtime wheels
+   as well, for a marginal gain.
+4. Download the **Windows, ZIP** package (not the tar/deb variants).
+5. Extract it; the DLLs you need are under `lib/` (`nvinfer_10.dll`,
+   `nvinfer_plugin_10.dll`, `nvonnxparser_10.dll`, and a few more) — copy
+   all of `lib/*.dll` next to `katago.exe`.
+
+### A missing-DLL gotcha on recent Windows KataGo builds
+
+KataGo builds compiled with newer MSVC tooling can fail to start with
+`STATUS_DLL_NOT_FOUND` (PowerShell: silent exit code `-1073741515`; a
+POSIX-style shell will instead name the actual missing file, e.g.
+`error while loading shared libraries: api-ms-win-crt-utility-l1-1-0.dll`)
+even on an up-to-date Windows install, because the Universal CRT "API set"
+forwarder DLLs aren't resolving even though `ucrtbase.dll` itself is
+present. Fix: copy the actual files from
+`C:\Windows\System32\downlevel\api-ms-win-crt-*.dll` to next to
+`katago.exe` (they exist on disk, they're just not resolving via the
+normal apiset lookup for some reason). This sidesteps needing to install/
+repair the Visual C++ Redistributable.
+
+### Recommended layout: one folder per backend
+
+If you're setting up more than one backend (e.g. keeping OpenCL as a
+fallback while trying CUDA/TensorRT), don't overwrite in place — put each
+build in its own sibling folder (`katago/`, `katago-cuda/`, `katago-trt/`)
+so you can always fall back and A/B benchmark. Only the binary and its
+backend-specific DLLs differ between them; copy the same `models/`,
+`analysis.cfg`, and `default_gtp.cfg` into each folder so every build is
+self-contained (needed for tools like LizzieYzy Next's Auto Setup, which
+expects `analysis.cfg` to sit right next to whichever `katago.exe` you
+point it at — see
+[LIZZIE_UI_SETUP.md](LIZZIE_UI_SETUP.md#katago-auto-setup-and-humansl)).
+baduk-lab's own CLI auto-detects this layout and prefers `katago-trt/` >
+`katago-cuda/` > `katago/` automatically (see [README.md](README.md#usage)).
+
 ### 2. Download a neural net
 
 Get a model from [katagotraining.org/networks](https://katagotraining.org/networks/kata1/).

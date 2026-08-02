@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 # users never need to pass --katago/--model/--config explicitly.
 _KATRAIN_MAC_RESOURCES = Path("/Applications/KaTrain.app/Contents/Resources/katrain")
 
+# This repo's own local KataGo installs (see KATAGO_SETUP.md), fastest backend
+# first. All three share one model/config directory (katago/); only the
+# binary + its GPU backend DLLs differ between katago-trt/katago-cuda/katago.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_KATAGO_BUILDS = ["katago-trt", "katago-cuda", "katago"]
+
 
 def _find_katrain_katago() -> tuple[Path, Path, Path] | None:
     if not _KATRAIN_MAC_RESOURCES.is_dir():
@@ -32,6 +38,18 @@ def _find_katrain_katago() -> tuple[Path, Path, Path] | None:
     if not (binary.exists() and config.exists() and models):
         return None
     return binary, models[-1], config
+
+
+def _find_local_katago() -> tuple[Path, Path, Path] | None:
+    config = _REPO_ROOT / "katago" / "analysis.cfg"
+    models = sorted((_REPO_ROOT / "katago" / "models").glob("*.bin.gz"))
+    if not (config.exists() and models):
+        return None
+    for build_dir in _LOCAL_KATAGO_BUILDS:
+        binary = _REPO_ROOT / build_dir / "katago.exe"
+        if binary.exists():
+            return binary, models[-1], config
+    return None
 
 
 def main() -> None:
@@ -58,7 +76,7 @@ def _run_analyze(args: argparse.Namespace) -> None:
 
     katago, model, config = args.katago, args.model, args.config
     if not (katago and model and config):
-        found = _find_katrain_katago()
+        found = _find_local_katago() or _find_katrain_katago()
         if found is None:
             sys.exit("Could not find a local KataGo install. "
                      "Pass --katago/--model/--config explicitly.")
