@@ -120,6 +120,91 @@ install **TensorRT** for faster analysis on RTX 20/30/40/50 series — see
 [KATAGO_SETUP.md](KATAGO_SETUP.md#cuda-and-tensorrt-setup-nvidia-gpus) if
 you want the manual/non-LizzieYzy equivalent for baduk-lab or KaTrain.
 
+## TensorRT and HumanSL don't mix in one install
+
+If you've set up a faster `katago-trt/` build per
+[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-per-backend)
+and pointed the KataGo Auto Setup wizard at it, you may hit a wall trying
+to also use HumanSL: TensorRT can build an engine for a normal-sized
+KataGo net fine, but chokes on the small HumanSL net specifically
+(`b18c384nbt-humanv0.bin.gz` at time of writing).
+
+**Symptom:** HumanSL games (or the "fast whole-game analysis" feature,
+which shares the same engine profile) fail or hang, with no error dialog.
+Checking the actual katago logs (`analysis_logs/` — the location depends
+on LizzieYzy Next's working directory when it launched the process; search
+the whole repo tree if it's not next to `katago.exe`) shows the pattern:
+the main net's TensorRT engine builds fine, then it starts
+`TensorRT backend: building network via ONNX emitter` for the HumanSL net
+and the log just stops — no error, the process silently dies partway
+through. This is reproducible every time, not a one-off timing issue.
+
+**There's no per-feature engine switch** — HumanSL and whole-game-analysis
+both read the same `katago-auto-setup-engine-path` /
+`katago-auto-setup-analysis-config-path` settings, so you can't have
+"TensorRT for whole-game-analysis, OpenCL for HumanSL" within one install.
+
+**Fix: run a second, fully independent portable install.** LizzieYzy
+Next's portable build has no installer and no shared system state — it's
+just an unzip — so two copies coexist cleanly with zero conflict:
+
+1. Extract the same release zip into a new sibling folder (e.g.
+   `lizzieyzy-next-fast/` next to your existing `lizzieyzy-next/`).
+2. **Before ever launching it**, copy your existing install's
+   `user-data\config.txt` into the new folder's `user-data\` — this
+   carries over your UI preferences, komi profiles, etc. as a starting
+   point instead of starting from scratch.
+3. While it's still never been launched (see the next section for why
+   this timing matters), hand-edit these fields in the copy to point
+   everywhere at your fast backend:
+   - `katago-auto-setup-engine-path`
+   - `katago-auto-setup-analysis-config-path`
+   - `katago-auto-setup-gtp-config-path`
+   - `analysis-engine-command`
+   - `estimate-command`
+   - each `"command"` field under `leelaz.engine-settings-list`
+4. Leave HumanSL unconfigured in this new install entirely — that's the
+   point of keeping it separate.
+
+Now you have one install for HumanSL (on OpenCL/CUDA, whichever build
+handles that net) and one dedicated to fast TensorRT analysis, and they
+never fight over shared config.
+
+## The #1 way to make config edits vanish: editing `config.txt` while the app is open
+
+`user-data\config.txt` is not just a settings file you edit and forget —
+LizzieYzy Next periodically **rewrites the whole file from its own
+in-memory state** while running (and definitely on exit). If you hand-edit
+`config.txt` while the app is open, your edit is live for a little while
+and then silently overwritten back to whatever the running app still has
+in memory the next time it saves. There's no error, no warning — it just
+looks like your fix "didn't take," which sends you back to debugging a
+problem that's already fixed on disk but not in the running process.
+
+**Rule: fully close LizzieYzy Next before hand-editing `config.txt`, and
+don't relaunch until you're done.** Confirm it's actually closed first
+(the `.exe` name is the same across every install, portable or not):
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -like "*Lizzie*" }
+```
+
+Empty output means it's safe to edit.
+
+**A related trap:** `analysis-engine-command` looks like the obvious field
+to edit if you want to change which `katago.exe` the analysis/HumanSL
+engine uses — but it isn't actually the source of truth. LizzieYzy Next
+regenerates it from `katago-auto-setup-engine-path` +
+`katago-auto-setup-analysis-config-path`, so editing only
+`analysis-engine-command` has no effect on the next launch; it gets
+overwritten to match those other two fields regardless. Edit the
+`katago-auto-setup-*` fields, not `analysis-engine-command` directly.
+
+Whenever config.txt edits seem to not be sticking, the fastest way to cut
+through the confusion is to stop trusting the file or the UI and check
+what's *actually* running — see "Confirm it's using the right engine"
+below. That command doesn't care what any config file claims.
+
 ## "analysis.cfg has been missing and has been auto generated" — expected, not an error
 
 LizzieYzy Next actually runs **two separate KataGo processes**: the `gtp`
@@ -150,3 +235,96 @@ pointed at your paths:
 Get-CimInstance Win32_Process -Filter "Name = 'katago.exe'" |
   Select-Object ProcessId, CommandLine | Format-List
 ```
+
+This works the same way regardless of which install launched the process,
+and reflects reality even when a config file or the UI is stale — see the
+`config.txt`-clobbering trap above for why that distinction matters.
+
+## Replacing the byoyomi countdown sounds
+
+The countdown beeps (and the stone-placement / dead-stone-marking sounds)
+aren't loose files and there's no in-app setting or external
+override/theme folder for them — they're baked directly inside the app's
+jar, at `app\lizzie-yzy<version>-shaded.jar` → `assets/sound/0.wav`
+through `9.wav` (plus `Stone.wav`, `deadStone.wav`, `deadStoneMore.wav`).
+Changing them means editing the jar itself. A jar is just a zip, so this
+is more approachable than it sounds — but a few things matter:
+
+**Format/timing constraint:** the stock beeps are mono, 22050 Hz, 16-bit
+PCM, and only ~0.23 seconds each. The countdown ticks roughly once a
+second, so a replacement sound needs to stay under ~1 second or it'll
+still be playing when the next tick fires. This matters if you want
+something more distinctive than a beep (e.g. spoken numbers, which cut
+through noise-cancelling headsets much better than tones) — normal-speed
+speech runs 1.3+ seconds per digit, too long.
+
+**Generating replacements for free, offline:** Windows' built-in SAPI
+text-to-speech, via PowerShell, needs no internet and no licensing
+concerns:
+
+```powershell
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.SelectVoice("Microsoft Zira Desktop")  # or "Microsoft David Desktop"
+$synth.Rate = 4  # 0 = normal; each step speeds it up. Needed to get spoken
+                 # digits under ~1 second — Rate 4 landed every 0-9 clip
+                 # under 0.95s on this machine, Rate 3 left a couple over 1s.
+for ($i = 0; $i -le 9; $i++) {
+    $synth.SetOutputToWaveFile("C:\path\to\output\$i.wav")
+    $synth.Speak("$i")
+    $synth.SetOutputToNull()
+}
+```
+
+`Get-InstalledVoices` on a stock Windows install typically only offers
+`Microsoft David Desktop` (male) and `Microsoft Zira Desktop` (female) —
+generate both and listen before committing, voice/pacing preference is
+subjective. Conveniently, SAPI's default WAV output already matches the
+original beeps' format (mono/22050 Hz/16-bit), so no conversion needed.
+
+**Splicing the new files into the jar:** git-bash doesn't ship a `zip`
+binary that can update entries in-place, but .NET's
+`System.IO.Compression.ZipArchive` (available from any PowerShell) can, in
+`Update` mode:
+
+```powershell
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$jarPath = "C:\path\to\LizzieYzy Next\app\lizzie-yzy<version>-shaded.jar"
+Copy-Item $jarPath "$jarPath.original-beeps-backup"  # back up first, always
+
+$zip = [System.IO.Compression.ZipFile]::Open($jarPath, [System.IO.Compression.ZipArchiveMode]::Update)
+try {
+    for ($i = 0; $i -le 9; $i++) {
+        $entryName = "assets/sound/$i.wav"
+        $existing = $zip.GetEntry($entryName)
+        if ($existing) { $existing.Delete() }
+        $newEntry = $zip.CreateEntry($entryName)
+        $bytes = [System.IO.File]::ReadAllBytes("C:\path\to\output\$i.wav")
+        $stream = $newEntry.Open()
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Close()
+    }
+} finally {
+    $zip.Dispose()
+}
+```
+
+Confirm LizzieYzy Next is fully closed first (same reason as the
+`config.txt` warning above — Windows will also just flat-out lock the jar
+file if a running JVM has it open, so this fails loudly rather than
+silently if you forget).
+
+**A false alarm to expect afterward:** running `unzip -t` on the modified
+jar reports `bad CRC` errors on every zero-byte *directory* entry (e.g.
+`assets/sound/`, `META-INF/`) — this is a known cosmetic quirk of how
+.NET's `ZipArchive` rewrites the central directory in `Update` mode, not
+real corruption. Confirm by checking that only directory entries (paths
+ending in `/`) show the warning and every actual file entry reports `OK`;
+Java's own jar/zip reader doesn't validate CRCs on directory entries
+anyway, so the app runs fine regardless. Launch the app afterward to
+confirm rather than trusting the theory, though — that's the real test.
+
+Keep the `.original-beeps-backup` copy — reverting to stock beeps is just
+copying it back over the modified jar.
