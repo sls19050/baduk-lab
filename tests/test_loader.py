@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from baduk_lab.loader import load_folder, load_sgf
+from sgfmill.common import format_vertex
+
+from baduk_lab.loader import load_folder, load_gib, load_sgf
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -49,6 +51,13 @@ def test_color_of_matches_black_and_white_by_name():
     assert record.color_of("nobody") is None
 
 
+def test_color_of_matches_any_alias():
+    record = load_sgf(FIXTURES / "sample.sgf")
+
+    assert record.color_of(["nobody", "black_player"]) == "b"
+    assert record.color_of(["nobody", "still nobody"]) is None
+
+
 def test_load_folder_skips_unparseable_files(tmp_path):
     good = tmp_path / "good.sgf"
     good.write_text((FIXTURES / "sample.sgf").read_text())
@@ -59,3 +68,54 @@ def test_load_folder_skips_unparseable_files(tmp_path):
 
     assert len(records) == 1
     assert records[0].path == good
+
+
+def test_load_folder_recurses_and_loads_sgf_and_gib(tmp_path):
+    (tmp_path / "2026-08").mkdir()
+    sgf_copy = tmp_path / "2026-08" / "game.sgf"
+    sgf_copy.write_text((FIXTURES / "sample.sgf").read_text())
+    gib_copy = tmp_path / "2026-08" / "game.gib"
+    gib_copy.write_bytes((FIXTURES / "sample.gib").read_bytes())
+
+    records = load_folder(tmp_path)
+
+    assert {r.path for r in records} == {sgf_copy, gib_copy}
+
+
+def test_load_gib_parses_header():
+    record = load_gib(FIXTURES / "sample.gib")
+
+    assert record.board_size == 19
+    assert record.komi == 6.5
+    assert record.player_black == "black_player"
+    assert record.player_white == "white_player"
+    assert record.result == "B+R"
+    assert record.date == "2026-08-16"
+    assert len(record.moves) == 5
+
+
+def test_gib_moves_are_numbered_and_alternate_color():
+    record = load_gib(FIXTURES / "sample.gib")
+
+    assert [m.number for m in record.moves] == [1, 2, 3, 4, 5]
+    assert [m.color for m in record.moves] == ["b", "w", "b", "w", "b"]
+
+
+def test_gib_coordinates_match_sgfmill_convention():
+    # Fixture's first STO line is "STO 0 2 1 16 3" -> color=1(black), x=16, y=3.
+    # Tygem's x/y are raw SGF-style (x=col left-to-right, y=row top-to-bottom,
+    # no inversion -- verified against GibParser.cpp), so on a 19x19 board
+    # this is sgfmill vertex (row=18-3=15, col=16) -> "R16".
+    record = load_gib(FIXTURES / "sample.gib")
+
+    assert record.moves[0].coord == (15, 16)
+    assert format_vertex(record.moves[0].coord) == "R16"
+
+
+def test_gib_color_of_matches_nick_not_display_name():
+    record = load_gib(FIXTURES / "sample.gib")
+
+    # GAMEBLACKNAME is "black_player (8D)" -- color_of should match the
+    # clean GAMEBLACKNICK, not require the rank suffix.
+    assert record.color_of("black_player") == "b"
+    assert record.color_of("white_player") == "w"

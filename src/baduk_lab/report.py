@@ -13,6 +13,8 @@ Report structure:
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from sgfmill import sgf as sgf_lib
@@ -73,15 +75,18 @@ def render_report(out_dir: Path, *, player: str, analyses: list[GameAnalysis],
         "## Problem set",
         "",
         f"{len(problems)} positions extracted to `problems/` "
-        f"(losing {metrics.PROBLEM_THRESHOLD}+ points).",
+        f"(losing {metrics.PROBLEM_THRESHOLD}+ points). Run `baduk-lab review` to "
+        "drill them; re-running `analyze` later only adds new mistakes, it "
+        "doesn't reset your review progress.",
         "",
-        "| # | Game | Move | Points lost | File |",
-        "|---|------|------|-------------|------|",
+        "| # | Phase | Game | Move | Points lost | File |",
+        "|---|-------|------|------|-------------|------|",
     ]
     for i, p in enumerate(problems, start=1):
-        filename = _problem_filename(i, p)
-        lines.append(f"| {i} | {p.game} | {p.move_number} | {p.points_lost:.1f} | "
-                     f"[{filename}](problems/{filename}) |")
+        relpath = _problem_relpath(p)
+        lines.append(f"| {i} | {metrics.phase_of(p.move_number)} | {p.game} | "
+                     f"{p.move_number} | {p.points_lost:.1f} | "
+                     f"[{relpath}](problems/{relpath}) |")
 
     report_path = out_dir / "report.md"
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -114,21 +119,27 @@ def _ahead_behind_takeaway(ahead_behind: metrics.AheadBehindSplit) -> str:
     return "**Takeaway:** your move quality is roughly stable whether ahead or behind."
 
 
-def _problem_filename(index: int, problem: metrics.ProblemPosition) -> str:
+def _problem_relpath(problem: metrics.ProblemPosition) -> str:
+    """Stable, phase-grouped relative path under problems/ -- derived from
+    the source game + move number (not sort position), so re-running
+    `analyze` with new games mixed in doesn't rename/duplicate files you've
+    already reviewed."""
+    phase = metrics.phase_of(problem.move_number)
     stem = Path(problem.game).stem
-    return f"{index:02d}_{stem}_m{problem.move_number}.sgf"
+    return f"{phase}/{stem}_m{problem.move_number:03d}.sgf"
 
 
 def export_problem_sgfs(problems: list[metrics.ProblemPosition], out_dir: Path,
                         analyses: list[GameAnalysis]) -> None:
-    """Export each problem position as its own SGF. The main line stops right
-    before the mistake (so your move is hidden); what you played and KataGo's
-    preferred move are stored as two sibling variations, one click away but
-    not spoiled on open."""
+    """Export each problem position as its own SGF, grouped into
+    opening/middle/endgame subfolders. The main line stops right before the
+    mistake (so your move is hidden); what you played and KataGo's preferred
+    move are stored as two sibling variations, one click away but not
+    spoiled on open."""
     out_dir.mkdir(parents=True, exist_ok=True)
     by_game = {a.record.path.name: a for a in analyses}
 
-    for i, problem in enumerate(problems, start=1):
+    for problem in problems:
         analysis = by_game.get(problem.game)
         if analysis is None:
             continue
@@ -159,5 +170,66 @@ def export_problem_sgfs(problems: list[metrics.ProblemPosition], out_dir: Path,
         best.set_move(mover, move_from_vertex(problem.best, record.board_size))
         best.set("C", "KataGo's preferred move.")
 
-        path = out_dir / _problem_filename(i, problem)
+        path = out_dir / _problem_relpath(problem)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(game.serialise())
+
+
+@dataclass
+class ProblemIndexEntry:
+    """Machine-readable mirror of one ProblemPosition, as written to
+    problems/index.json. `quiz.py`'s review-scheduling functions accept
+    either this or a metrics.ProblemPosition -- both expose the
+    `problem_id`/`points_lost` attributes they need. `played`/`best` (SGF
+    vertex strings, e.g. "Q16") are what quiz_html.py needs to grade a
+    click and mark the board without re-running KataGo."""
+    problem_id: str
+    game: str
+    move_number: int
+    phase: str
+    points_lost: float
+    path: str
+    played: str
+    best: str
+
+
+def export_problem_index(problems: list[metrics.ProblemPosition], out_dir: Path) -> Path:
+    """Write problems/index.json: the full current problem set, keyed by
+    stable problem_id. This is what `baduk-lab review` reads -- it never
+    needs to re-run KataGo or re-derive problems itself."""
+    entries = [
+        ProblemIndexEntry(
+            problem_id=p.problem_id, game=p.game, move_number=p.move_number,
+            phase=metrics.phase_of(p.move_number), points_lost=p.points_lost,
+            path=_problem_relpath(p), played=p.played, best=p.best,
+        )
+        for p in problems
+    ]
+    path = out_dir / "index.json"
+    path.write_text(json.dumps([asdict(e) for e in entries], indent=2), encoding="utf-8")
+    return path
+
+
+def load_problem_index(out_dir: Path) -> list[ProblemIndexEntry]:
+    """Read back problems/index.json written by export_problem_index."""
+    data = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    return [ProblemIndexEntry(**entry) for entry in data]
+
+
+def export_game_records(analyses: list[GameAnalysis], out_dir: Path) -> Path:
+    """Write problems/games.json: {game_filename: {board_size, moves:
+    [[color, row, col_or_null], ...]}} for every analyzed game. This is
+    what quiz_html.py uses to reconstruct any problem's pre-mistake board
+    (via board.board_before) without re-parsing the original SGF/.gib
+    source folder, which `review` has no reason to touch."""
+    games = {
+        analysis.record.path.name: {
+            "board_size": analysis.record.board_size,
+            "moves": [[m.color, list(m.coord) if m.coord else None]
+                     for m in analysis.record.moves],
+        }
+        for analysis in analyses
+    }
+    path = out_dir / "games.json"
+    path.write_text(json.dumps(games), encoding="utf-8")
+    return path

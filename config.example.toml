@@ -1,0 +1,25 @@
+# Copy this to config.toml (gitignored) and fill in your own values.
+# Everything here is optional -- CLI flags always override it.
+
+[player]
+# Every server handle/account you play under. Matched case-insensitively
+# as a substring against each game's PB/PW (SGF) or
+# GAMEBLACKNICK/GAMEWHITENICK (Tygem .gib), so one run covers every
+# account -- handy if your rank/handle changed mid-history.
+aliases = ["your-handle", "your-other-handle"]
+
+[source]
+# Folder baduk-lab scans by default when no folder is passed on the command
+# line. Scanned recursively, so Tygem's Gibo/YYYY-MM/ layout works as-is.
+default_folder = "C:\\Program Files (x86)\\TygemGlobal2.0\\Gibo"
+
+[lizzieyzy]
+# Optional. Powers the "Deep analysis in LizzieYzy" button in `review
+# --html`'s quiz page -- clicking it launches this exe with the problem's
+# SGF path as an argument, which opens straight into that position for
+# live/continuous analysis. Point it at whichever install you want
+# triggered; a lizzieyzy-next-fast/ (TensorRT) build is a good pick if you
+# have one, since this is meant for quick "let me really look at this one"
+# dives, not casual browsing. Leave unset/delete this section to hide the
+# button's functionality (it still shows, just errors when clicked).
+exe = "C:\\path\\to\\lizzieyzy-next-fast\\LizzieYzy Next\\LizzieYzy Next.exe"

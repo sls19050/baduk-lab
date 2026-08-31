@@ -16,7 +16,9 @@ Deliberately NOT in MVP (sample too small to be honest):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from sgfmill.common import format_vertex
 
@@ -77,6 +79,13 @@ class ProblemPosition:
     played: str        # what you played, e.g. "Q10"
     best: str          # KataGo's preferred move
 
+    @property
+    def problem_id(self) -> str:
+        """Stable identity derived from the source game + move number, not
+        sort position -- safe to persist across re-runs (new games added,
+        problems re-sorted) without renumbering or losing review history."""
+        return f"{Path(self.game).stem}::m{self.move_number}"
+
 
 @dataclass
 class _PlayerMove:
@@ -89,7 +98,7 @@ class _PlayerMove:
     best: str
 
 
-def _phase(move_number: int) -> str:
+def phase_of(move_number: int) -> str:
     if move_number <= OPENING_END:
         return "opening"
     if move_number <= MIDDLE_END:
@@ -97,7 +106,7 @@ def _phase(move_number: int) -> str:
     return "endgame"
 
 
-def _player_moves(analyses: list[GameAnalysis], player: str) -> list[_PlayerMove]:
+def _player_moves(analyses: list[GameAnalysis], player: str | Sequence[str]) -> list[_PlayerMove]:
     """Every move the player of interest played, across all games, with the
     points lost and context needed by every metric below."""
     out = []
@@ -123,7 +132,7 @@ def _player_moves(analyses: list[GameAnalysis], player: str) -> list[_PlayerMove
             out.append(_PlayerMove(
                 game=record.path.name,
                 move_number=move.number,
-                phase=_phase(move.number),
+                phase=phase_of(move.number),
                 points_lost=max(0.0, raw_loss),
                 winrate_before=winrate_before,
                 played=format_vertex(move.coord),
@@ -136,7 +145,7 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def phase_loss_distribution(analyses: list[GameAnalysis], player: str) -> PhaseLoss:
+def phase_loss_distribution(analyses: list[GameAnalysis], player: str | Sequence[str]) -> PhaseLoss:
     moves = _player_moves(analyses, player)
     totals = {"opening": 0.0, "middle": 0.0, "endgame": 0.0}
     by_phase: dict[str, list[float]] = {"opening": [], "middle": [], "endgame": []}
@@ -153,7 +162,7 @@ def phase_loss_distribution(analyses: list[GameAnalysis], player: str) -> PhaseL
     )
 
 
-def magnitude_profile(analyses: list[GameAnalysis], player: str) -> MagnitudeProfile:
+def magnitude_profile(analyses: list[GameAnalysis], player: str | Sequence[str]) -> MagnitudeProfile:
     moves = _player_moves(analyses, player)
     n_games = len({m.game for m in moves})
     buckets = {label: 0 for label, _, _ in MAGNITUDE_BUCKETS}
@@ -171,7 +180,7 @@ def magnitude_profile(analyses: list[GameAnalysis], player: str) -> MagnitudePro
     )
 
 
-def ahead_behind_split(analyses: list[GameAnalysis], player: str) -> AheadBehindSplit:
+def ahead_behind_split(analyses: list[GameAnalysis], player: str | Sequence[str]) -> AheadBehindSplit:
     moves = [m for m in _player_moves(analyses, player) if m.winrate_before is not None]
     ahead = [m.points_lost for m in moves if m.winrate_before >= AHEAD]
     behind = [m.points_lost for m in moves if m.winrate_before <= BEHIND]
@@ -183,7 +192,7 @@ def ahead_behind_split(analyses: list[GameAnalysis], player: str) -> AheadBehind
     )
 
 
-def problem_positions(analyses: list[GameAnalysis], player: str,
+def problem_positions(analyses: list[GameAnalysis], player: str | Sequence[str],
                       threshold: float = PROBLEM_THRESHOLD) -> list[ProblemPosition]:
     moves = _player_moves(analyses, player)
     problems = [

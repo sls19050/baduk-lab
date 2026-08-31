@@ -26,8 +26,21 @@ def test_render_report_writes_markdown_with_all_sections(tmp_path):
     assert "## Mistake magnitude profile" in text
     assert "## Ahead/behind behavior" in text
     assert "## Problem set" in text
-    for i, problem in enumerate(problems, start=1):
-        assert report._problem_filename(i, problem) in text
+    for problem in problems:
+        assert report._problem_relpath(problem) in text
+
+
+def test_problem_relpath_is_stable_and_phase_grouped():
+    opening = metrics.ProblemPosition(
+        game="g.sgf", move_number=10, points_lost=5.0, played="Q16", best="D4")
+    endgame = metrics.ProblemPosition(
+        game="g.sgf", move_number=180, points_lost=5.0, played="Q16", best="D4")
+
+    assert report._problem_relpath(opening) == "opening/g_m010.sgf"
+    assert report._problem_relpath(endgame) == "endgame/g_m180.sgf"
+    # stable regardless of the problem's position in a sorted list -- no
+    # running index baked into the filename.
+    assert report._problem_relpath(opening) == "opening/g_m010.sgf"
 
 
 def test_export_problem_sgfs_hides_the_played_move(tmp_path):
@@ -36,12 +49,14 @@ def test_export_problem_sgfs_hides_the_played_move(tmp_path):
 
     report.export_problem_sgfs(problems, tmp_path, analyses=[analysis])
 
-    files = sorted(tmp_path.glob("*.sgf"))
+    files = sorted(tmp_path.rglob("*.sgf"))
     assert len(files) == len(problems) == 2
 
     from sgfmill import sgf as sgf_lib
     problem = problems[0]
-    game = sgf_lib.Sgf_game.from_bytes(files[0].read_bytes())
+    path = tmp_path / report._problem_relpath(problem)
+    assert path in files
+    game = sgf_lib.Sgf_game.from_bytes(path.read_bytes())
     node = game.get_root()
     for _ in range(problem.move_number - 1):
         node = node[0]
@@ -61,4 +76,37 @@ def test_export_problem_sgfs_skips_problems_from_unknown_games(tmp_path):
 
     report.export_problem_sgfs([fake_problem], tmp_path, analyses=[analysis])
 
-    assert list(tmp_path.glob("*.sgf")) == []
+    assert list(tmp_path.rglob("*.sgf")) == []
+
+
+def test_export_and_load_problem_index_round_trips(tmp_path):
+    analysis = build_analysis(5, "b", losses={1: 2.0, 3: 10.0, 5: 6.0})
+    problems = metrics.problem_positions([analysis], PLAYER)
+
+    report.export_problem_index(problems, tmp_path)
+    loaded = report.load_problem_index(tmp_path)
+
+    assert {e.problem_id for e in loaded} == {p.problem_id for p in problems}
+    by_id = {e.problem_id: e for e in loaded}
+    for problem in problems:
+        entry = by_id[problem.problem_id]
+        assert entry.game == problem.game
+        assert entry.move_number == problem.move_number
+        assert entry.points_lost == problem.points_lost
+        assert entry.path == report._problem_relpath(problem)
+        assert entry.played == problem.played
+        assert entry.best == problem.best
+
+
+def test_export_game_records_writes_one_entry_per_game(tmp_path):
+    a = build_analysis(3, "b", losses={1: 5.0}, name="a.sgf")
+    b = build_analysis(2, "w", losses={2: 5.0}, name="b.sgf")
+
+    path = report.export_game_records([a, b], tmp_path)
+
+    import json
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert set(data.keys()) == {"a.sgf", "b.sgf"}
+    assert data["a.sgf"]["board_size"] == 19
+    assert data["a.sgf"]["moves"] == [["b", [3, 3]], ["w", [3, 3]], ["b", [3, 3]]]
+    assert data["b.sgf"]["moves"] == [["b", [3, 3]], ["w", [3, 3]]]

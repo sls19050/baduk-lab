@@ -7,3 +7,4 @@ raw/
 !tests/fixtures/*.sgf
 /games/
 analysis_logs/
+/config.toml

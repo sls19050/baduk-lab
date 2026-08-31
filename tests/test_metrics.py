@@ -61,6 +61,17 @@ def test_problem_positions_filters_and_sorts_by_points_lost():
     assert all(p.game == "game.sgf" for p in problems)
 
 
+def test_problem_id_is_stable_across_resorts():
+    a = metrics.ProblemPosition(game="foo.sgf", move_number=42, points_lost=5.0,
+                                played="Q16", best="D4")
+    b = metrics.ProblemPosition(game="foo.sgf", move_number=42, points_lost=99.0,
+                                played="A1", best="B2")
+
+    # same game+move -> same id, regardless of points_lost/played/best --
+    # this is what lets quiz state survive a re-run's re-sorting.
+    assert a.problem_id == b.problem_id == "foo::m42"
+
+
 def test_problem_positions_respects_custom_threshold():
     analysis = build_analysis(3, "b", losses={1: 2.0, 3: 3.0})
 
