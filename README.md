@@ -254,16 +254,17 @@ problem, no manual y/n typing.
 
 This starts a small local server (`http://127.0.0.1:<port>`) and opens
 your default browser to it automatically, rather than just writing the
-file for you to double-click. That's not optional flourish: the page's
-"Connect quiz_state.json" button uses the browser's File System Access
-API to save your answers back into the same box-scheduling file the
-terminal flow uses, and that API only works in a *secure context*
-(HTTPS or `http://localhost`) -- browsers refuse it entirely on a plain
-`file://` page. Click "Connect quiz_state.json" once, pick the file from
-`report/`, and every graded answer after that updates it live -- same
-3-tier scheduling as below. Chrome/Edge only; other browsers still let
-you take the quiz, just without saved progress (a banner says so).
-Ctrl+C in the terminal once you're done to stop the server.
+file for you to double-click. That's not optional flourish: every graded
+answer is saved automatically -- the page POSTs it to `/quiz-state` on
+that same local server, which already knows where `quiz_state.json` lives
+(it's the one that just wrote it) and updates it using the same box
+scheduling as the terminal flow, no file picker or manual "connect" step
+needed. That POST is a same-origin fetch, which is why this needs the
+local server instead of a plain `file://` page (same reason `/open-lizzie`
+below does). Works in any browser; if the request ever fails (server not
+reachable) the status line next to the score says so instead of silently
+losing progress. Ctrl+C in the terminal once you're done to stop the
+server.
 
 **"Deep analysis in LizzieYzy"** button, on each problem: launches
 whatever's configured under `[lizzieyzy] exe` in `config.toml` (see

@@ -8,13 +8,13 @@ best vertices into one embedded JSON blob, and ships a hand-rolled inline
 SVG board renderer -- no external libraries, no CDN, works offline.
 
 Grading is client-side and immediate: click an empty intersection, it's
-compared to the recorded "best" vertex. If the page is given write access
-to quiz_state.json (Chrome/Edge's File System Access API), each graded
-answer updates that file using the same box/next-due scheme as
-quiz.record_result -- reimplemented in JS since there's no server here to
-call back into Python. Falls back to session-only scoring (with a visible
-banner) on browsers without that API, or if the user declines/cancels the
-file picker.
+compared to the recorded "best" vertex. Each graded answer is then POSTed
+to /quiz-state on the local server this page is served from, which calls
+the same quiz.record_result/save_state used by the terminal review flow --
+no file picker, no client-side reimplementation of the box scheduling.
+Falls back to a visible "not saved" banner if that request fails (server
+not reachable, e.g. the page was saved and reopened directly instead of
+via `baduk-lab review --html`).
 """
 
 from __future__ import annotations
@@ -121,8 +121,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div class="bar">
   <div class="score" id="score">0 / 0</div>
   <div style="display:flex; align-items:center; gap:8px;">
-    <span id="saveStatus">Progress not saved (click Connect)</span>
-    <button id="connectBtn">Connect quiz_state.json</button>
+    <span id="saveStatus">Progress saves automatically</span>
   </div>
 </div>
 
@@ -153,11 +152,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = __QUIZ_DATA__;
 const CELL = 30, MARGIN = 26;
-const INTERVALS = {1: 1, 2: 4, 3: 14};
-const MAX_BOX = 3;
 
 let idx = 0, correctCount = 0, answeredCount = 0, answered = false;
-let fileHandle = null;
 
 const svg = document.getElementById('board');
 const metaEl = document.getElementById('meta');
@@ -340,56 +336,19 @@ document.getElementById('restartBtn').addEventListener('click', () => {
   renderProblem();
 });
 
-document.getElementById('connectBtn').addEventListener('click', async () => {
-  if (!window.showOpenFilePicker) {
-    saveStatusEl.textContent = "This browser can't save progress — try Chrome or Edge.";
-    return;
-  }
-  try {
-    const [handle] = await window.showOpenFilePicker({
-      types: [{description: 'Quiz state', accept: {'application/json': ['.json']}}],
-    });
-    if (handle.requestPermission) {
-      const perm = await handle.requestPermission({mode: 'readwrite'});
-      if (perm !== 'granted') {
-        saveStatusEl.textContent = 'Write permission not granted.';
-        return;
-      }
-    }
-    fileHandle = handle;
-    saveStatusEl.textContent = `Connected to ${handle.name} — progress will be saved.`;
-  } catch (err) {
-    if (err.name !== 'AbortError') saveStatusEl.textContent = 'Could not connect: ' + err.message;
-  }
-});
-
 async function saveResult(problemId, correct) {
-  if (!fileHandle) return;
   try {
-    const file = await fileHandle.getFile();
-    const text = await file.text();
-    const state = text.trim() ? JSON.parse(text) : {};
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
-    let entry = state[problemId];
-    if (!entry) entry = {box: 1, next_due: todayStr, first_seen: todayStr, times_seen: 0};
-    entry.times_seen = (entry.times_seen || 0) + 1;
-    if (correct) {
-      entry.box = Math.min(MAX_BOX, (entry.box || 1) + 1);
-      const due = new Date(now);
-      due.setDate(due.getDate() + INTERVALS[entry.box]);
-      entry.next_due = due.toISOString().slice(0, 10);
-    } else {
-      entry.box = 1;
-      entry.next_due = todayStr;
-    }
-    state[problemId] = entry;
-    const writable = await fileHandle.createWritable();
-    await writable.write(JSON.stringify(state, null, 2));
-    await writable.close();
-    saveStatusEl.textContent = `Saved (${fileHandle.name}) ✓`;
+    const res = await fetch('/quiz-state', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({problemId, correct}),
+    });
+    const body = await res.json();
+    saveStatusEl.textContent = body.ok
+      ? 'Saved to quiz_state.json ✓'
+      : 'Save failed: ' + body.error;
   } catch (err) {
-    saveStatusEl.textContent = 'Save failed: ' + err.message;
+    saveStatusEl.textContent = 'Could not reach the local server: ' + err.message;
   }
 }
 

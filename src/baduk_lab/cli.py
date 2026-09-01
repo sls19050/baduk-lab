@@ -19,6 +19,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import webbrowser
 from datetime import date
 from pathlib import Path
@@ -213,25 +214,58 @@ def _kill_process_tree(pid: int) -> None:
 
 
 class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
-    """Serves out_dir like SimpleHTTPRequestHandler, plus one extra route:
+    """Serves out_dir like SimpleHTTPRequestHandler, plus two extra routes:
     GET /open-lizzie?path=<sgf relpath under problems_dir> launches
     lizzieyzy_exe with that file, for quiz.html's "Deep analysis" button.
     Only one instance is kept alive at a time -- each request kills
     whatever this session's last /open-lizzie call launched (if it's still
     running) before starting the new one, so a whole quiz session only
     ever has one LizzieYzy window (and one KataGo engine) open, instead of
-    piling one up per click. All class attributes are set once in
-    _serve_and_open before the server starts -- this process only ever
-    runs one review session at a time."""
+    piling one up per click.
+
+    POST /quiz-state grades one problem straight into quiz_state.json using
+    the same quiz.record_result/save_state this process already uses for
+    the terminal review flow, instead of quiz.html reimplementing the box
+    scheduling in JS against a browser-picked file handle -- the server
+    already knows state_path (it's just out_dir/quiz_state.json), so there
+    is nothing for the page to pick. state_lock serializes writes since
+    ThreadingHTTPServer can run request handlers concurrently.
+
+    All class attributes are set once in _serve_and_open before the server
+    starts -- this process only ever runs one review session at a time."""
     problems_dir: Path | None = None
     lizzieyzy_exe: Path | None = None
     lizzieyzy_proc: subprocess.Popen | None = None
+    state_path: Path | None = None
+    state_lock = threading.Lock()
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/open-lizzie":
             self._handle_open_lizzie()
             return
         super().do_GET()
+
+    def do_POST(self) -> None:
+        if urlparse(self.path).path == "/quiz-state":
+            self._handle_save_state()
+            return
+        self.send_error(404)
+
+    def _handle_save_state(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            problem_id = str(body["problemId"])
+            correct = bool(body["correct"])
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            self._json(400, {"ok": False, "error": f"Bad request: {exc}"})
+            return
+
+        with self.state_lock:
+            state = quiz.load_state(self.state_path)
+            quiz.record_result(state, problem_id, correct, date.today())
+            quiz.save_state(self.state_path, state)
+        self._json(200, {"ok": True})
 
     def _handle_open_lizzie(self) -> None:
         query = parse_qs(urlparse(self.path).query)
@@ -271,23 +305,21 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str) -> None:
+def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path: Path) -> None:
     """Serve out_dir on 127.0.0.1 and open filename in the default browser.
 
-    quiz.html's "save progress to quiz_state.json" button needs the page's
-    File System Access API (window.showOpenFilePicker), which browsers only
-    expose in a secure context -- HTTPS or http://localhost, explicitly NOT
-    file://. Double-clicking quiz.html directly would silently break that
-    feature (and so would the /open-lizzie route below), so this serves it
-    over a throwaway local server instead. The server only needs to be up
-    for page loads (the file picker and the launched LizzieYzy process both
-    talk to the OS directly, not this server), but it's kept alive with
+    quiz.html grades each answer via a fetch() POST to /quiz-state on this
+    same server -- a relative fetch only resolves against a real origin, so
+    double-clicking quiz.html as a file:// page would break that (and the
+    /open-lizzie route below) regardless. The server only needs to be up
+    for page loads and those fetches, but it's kept alive with
     serve_forever() so a page reload later in the session still works;
     Ctrl+C stops it.
     """
     _QuizRequestHandler.problems_dir = problems_dir
     _QuizRequestHandler.lizzieyzy_exe = config.lizzieyzy_exe()
     _QuizRequestHandler.lizzieyzy_proc = None
+    _QuizRequestHandler.state_path = state_path
     handler = functools.partial(_QuizRequestHandler, directory=str(out_dir))
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
@@ -337,7 +369,7 @@ def _run_review(args: argparse.Namespace) -> None:
         games = json.loads(games_path.read_text(encoding="utf-8"))
         quiz_html.render_quiz_html(due, games, out_dir / "quiz.html", today)
         print(f"{len(due)} problem(s) ready.")
-        _serve_and_open(out_dir, problems_dir, "quiz.html")
+        _serve_and_open(out_dir, problems_dir, "quiz.html", state_path)
         return
 
     if not due:
