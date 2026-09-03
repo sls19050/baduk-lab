@@ -198,7 +198,11 @@ def problem_positions(analyses: list[GameAnalysis], player: str | Sequence[str],
     problems = [
         ProblemPosition(game=m.game, move_number=m.move_number, points_lost=m.points_lost,
                         played=m.played, best=m.best)
-        for m in moves if m.points_lost >= threshold
+        for m in moves
+        # Playing KataGo's own top move but still showing a large points_lost
+        # is search noise (independent per-turn evaluations, not a true delta
+        # against the best move), not a real mistake -- nothing to quiz here.
+        if m.points_lost >= threshold and m.played != m.best
     ]
     problems.sort(key=lambda p: p.points_lost, reverse=True)
     return problems
