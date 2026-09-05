@@ -92,6 +92,13 @@ Given ~8+ games, one markdown report containing:
    review` turns this into an actual quiz session -- it tracks what you've
    already drilled and resurfaces missed ones sooner, so re-running
    `analyze` as new games come in adds to the deck instead of resetting it.
+5. **A strength estimate over time** (experimental). Per game, a
+   kyu/dan/pro band and a continuous rank value, plus a rolling average
+   across your last 10 games so single noisy games don't skew what you
+   read as your trend -- both in `report.md`'s table and as a graph in
+   `strength_chart.html`. Ported from LizzieYzy Next's XGBoost20TUN model;
+   see [src/baduk_lab/models/strength/NOTICE.md](src/baduk_lab/models/strength/NOTICE.md)
+   for what that means for this repo's license.
 
 Planned, not in MVP:
 
@@ -218,7 +225,8 @@ Outputs:
 
 ```
 report/
-  report.md              # the diagnosis
+  report.md              # the diagnosis, including the strength-estimate table
+  strength_chart.html    # graph of the same strength-estimate data over time
   problems/
     opening/*.sgf        # your personalized problem set, one SGF per
     middle/*.sgf          # mistake, grouped by game phase
@@ -327,6 +335,10 @@ sgf/gib files -> loader.py -> engine.py (KataGo JSON analysis) -> metrics.py -> 
                                     SGF hash + model + visits)             replay, for quiz_html.py)
 ```
 
+`strength.py` reads the same `engine.py` output as `metrics.py` and feeds
+`report.py` too (its own strength-estimate section); `report.py` also
+feeds `strength_chart.py`, alongside `quiz.py`/`quiz_html.py`.
+
 - `loader.py` — SGF parsing (sgfmill) and hand-rolled Tygem `.gib` parsing
   (no library exists for it; format reverse-engineered from real files and
   cross-checked against a known open-source parser). Both produce the same
@@ -345,19 +357,34 @@ sgf/gib files -> loader.py -> engine.py (KataGo JSON analysis) -> metrics.py -> 
 - `engine.py` — `KataGoClient` runs `katago analysis` as a persistent
   subprocess and queries it once per game (all moves via `analyzeTurns`,
   not one query per position) over newline-delimited JSON on stdin/stdout.
-  Produces one `PositionAnalysis` per position (winrate, scoreLead, top
-  candidate moves), fixed to Black's perspective; `GameAnalysis.points_lost()`
-  converts to the mover's perspective. Results are cached to
-  `raw/<sgf-stem>.json` keyed by (SGF content hash, model, visits), so a
-  folder of mostly-already-analyzed games only pays for the new ones.
+  Produces one `PositionAnalysis` per position (winrate, scoreLead, and the
+  top candidate moves with their scoreMean/winrate/prior/order), fixed to
+  Black's perspective; `GameAnalysis.points_lost()` converts to the mover's
+  perspective. Results are cached to `raw/<sgf-stem>.json` keyed by (SGF
+  content hash, model, visits, schema), so a folder of mostly-already-analyzed
+  games only pays for the new ones.
 - `metrics.py` — pure functions from a list of `GameAnalysis` to diagnosis
   numbers. No I/O; this is what the test suite covers. `_player_moves()`
   flattens all games into one list of the player's moves with points lost,
   phase, and perspective-corrected winrate; four functions build on it:
   `phase_loss_distribution`, `magnitude_profile`, `ahead_behind_split`,
   `problem_positions`.
+- `strength.py` — per-game, per-color strength estimate: a from-scratch
+  Python port of LizzieYzy Next's move-quality feature pipeline
+  (`PlayerStrengthEstimator.java` et al.), feeding that project's vendored,
+  unmodified XGBoost model (`models/strength/`) rather than retraining
+  anything. Turns each move into a category/loss/complexity `Sample`,
+  aggregates a game's samples into ~20 named features, runs the model plus
+  its small residual calibrator for a continuous rank value, then applies a
+  separate rule-based guardrail layer (metric caps, elite-evidence floors)
+  for a conservative discrete band -- the two can disagree, and the band is
+  usually the more trustworthy one at sub-pro levels. See
+  [models/strength/NOTICE.md](src/baduk_lab/models/strength/NOTICE.md) for
+  why this one module is GPLv3, not MIT like the rest of the repo.
 - `report.py` — renders the four metric objects into `report.md` (one
-  plain-language takeaway per section), `export_problem_sgfs()`, which
+  plain-language takeaway per section) plus a chronological strength-estimate
+  table (`strength_timeline()`, with a rolling average since single-game
+  rank values are noisy), `export_problem_sgfs()`, which
   writes one SGF per problem position grouped into phase subfolders — the
   game up to the mistake, plus sibling variations for what was played vs.
   KataGo's preferred move, so the answer isn't spoiled on open —
@@ -390,17 +417,29 @@ sgf/gib files -> loader.py -> engine.py (KataGo JSON analysis) -> metrics.py -> 
   and keeps only one instance alive at a time by killing the previously
   launched process's entire tree (`_kill_process_tree()`, `taskkill /T` on
   Windows) before starting the next one.
+- `strength_chart.py` — renders `strength_chart.html`: a self-contained,
+  offline SVG line chart (no external libraries, same philosophy as
+  `quiz_html.py`) of `report.strength_timeline()`'s rank values and rolling
+  average over time, with hover tooltips and dashed reference lines for
+  whichever strength-band boundaries actually fall in your data's range.
+  No local server needed -- unlike `quiz.html`, there's nothing to write
+  back, so it just opens from disk.
 
 ## Status
 
 Working end to end: `baduk-lab analyze` parses a folder of SGF/`.gib` files
 (recursively, across configured player aliases), runs KataGo analysis
-(cached per game), computes all four MVP metrics, and writes `report.md`
-plus a phase-grouped problem-set SGF per flagged mistake. `baduk-lab review`
+(cached per game), computes all four MVP metrics plus an experimental
+per-game strength estimate, and writes `report.md`, `strength_chart.html`,
+and a phase-grouped problem-set SGF per flagged mistake. `baduk-lab review`
 (terminal, or `--html` for a real click-to-guess quiz page) turns that
 problem set into a repeatable quiz session with review-progress tracking
 across runs.
 
 ## License
 
-MIT
+MIT, **except** `src/baduk_lab/strength.py` and everything under
+`src/baduk_lab/models/strength/`, which are GPLv3 (ported from, and
+bundling an unmodified model from, wimi321/lizzieyzy-next) -- see
+[models/strength/NOTICE.md](src/baduk_lab/models/strength/NOTICE.md) for
+what that means if you fork or redistribute this repo.

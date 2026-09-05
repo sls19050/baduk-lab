@@ -240,6 +240,28 @@ build/CLI is mismatched (see the version-check note in Option A). If your
 GPU drivers are missing or too old, tuning fails outright — OpenCL/CUDA
 runtime must be installed separately from KataGo itself, it isn't bundled.
 
+### 6. Long batch runs: cap the NN eval cache
+
+`analysis_example.cfg` ships with `nnCacheSizePowerOfTwo = 23` (up to ~8.4
+million cached neural-net evaluations). That's fine for interactive use,
+but `baduk-lab analyze` keeps **one** `katago analysis` process alive for
+the entire folder, so this cache accumulates across every game in the
+batch, not just one. On a machine with limited RAM (16GB or less), a
+few-hundred-game backlog can grow that cache until the process gets
+OOM-killed partway through -- it happened on a 15.7GB-RAM machine partway
+through a 108-game run.
+
+Lower it in `analysis.cfg` before a large first-time batch:
+
+```
+nnCacheSizePowerOfTwo = 20
+```
+
+`2^20` (~1M entries) is still far more than any single game's search needs
+and keeps steady-state memory bounded no matter how many games are queued.
+If you have RAM to spare (32GB+), the stock `23` is fine and gives better
+cross-position cache hits.
+
 ## Wiring it into baduk-lab
 
 ```bash
