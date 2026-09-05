@@ -25,7 +25,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, metrics, quiz, quiz_html, report
+from . import config, metrics, quiz, quiz_html, report, strength, strength_chart
 from .engine import GameAnalysis, KataGoClient
 from .loader import load_folder
 
@@ -154,15 +154,22 @@ def _run_analyze(args: argparse.Namespace) -> None:
     ahead_behind = metrics.ahead_behind_split(analyses, player_aliases)
     problems = metrics.problem_positions(analyses, player_aliases)
 
+    logger.info("Estimating strength...")
+    strengths = {a.record.path.name: strength.estimate_game(a) for a in analyses}
+
     report_path = report.render_report(
         out_dir, player=" / ".join(player_aliases), analyses=analyses,
         phase_loss=phase_loss, magnitude=magnitude, ahead_behind=ahead_behind,
         problems=problems, model=str(model), visits=args.visits,
+        player_aliases=player_aliases, strengths=strengths,
     )
     problems_dir = out_dir / "problems"
     report.export_problem_sgfs(problems, problems_dir, analyses=analyses)
     report.export_problem_index(problems, problems_dir)
     report.export_game_records(analyses, problems_dir)
+
+    timeline = report.strength_timeline(analyses, strengths, player_aliases)
+    chart_path = strength_chart.render_strength_chart(timeline, out_dir / "strength_chart.html")
 
     state_path = out_dir / "quiz_state.json"
     state = quiz.load_state(state_path)
@@ -170,6 +177,7 @@ def _run_analyze(args: argparse.Namespace) -> None:
     quiz.save_state(state_path, state)
 
     logger.info("Report written to %s", report_path)
+    logger.info("Strength chart written to %s", chart_path)
     logger.info("%d problems tracked for review (run `baduk-lab review --out %s`)",
                len(problems), out_dir)
 

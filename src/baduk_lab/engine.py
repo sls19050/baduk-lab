@@ -7,10 +7,11 @@ Design decisions:
 - One query per game with `analyzeTurns` covering every move. KataGo batches
   internally; this is far faster than one query per position.
 - Results are cached to raw/<sgf-stem>.json keyed by (sgf content hash,
-  model, visits). Re-running the report never re-runs the engine.
+  model, visits, schema). Re-running the report never re-runs the engine.
 - We record, per position: winrate, scoreLead, and the top N candidate moves
-  with their scoreLead, so metrics.py can compute points lost and
-  move-distance without further engine calls.
+  with their scoreLead, winrate, scoreMean, prior (policy), and order, so
+  metrics.py can compute points lost and move-distance, and strength.py can
+  compute move-quality features, without further engine calls.
 
 winrate/scoreLead are fixed to Black's perspective for every position,
 regardless of whose turn it is -- confirmed empirically (KataGo's own docs
@@ -49,7 +50,12 @@ class PositionAnalysis:
     to_play: str             # "b" or "w"
     winrate: float           # Black's win probability, fixed perspective
     score_lead: float        # Black's score lead in points, fixed perspective
-    best_moves: list[dict]   # top candidates: {"move": "Q16", "scoreLead": ...}
+    best_moves: list[dict]   # top candidates: {"move", "scoreLead", "scoreMean",
+                              # "winrate", "prior", "order"}. Unlike the fields
+                              # above, each candidate's own scoreMean/winrate are
+                              # relative to whoever is to move at this position
+                              # (KataGo's per-moveInfo convention), so comparing
+                              # two candidates here needs no color-flip.
 
 
 @dataclass
@@ -82,7 +88,7 @@ class GameAnalysis:
 
 class KataGoClient:
     def __init__(self, katago_binary: Path, model: Path, config: Path,
-                 visits: int = 500, top_moves: int = 5):
+                 visits: int = 500, top_moves: int = 16):
         self.katago_binary = Path(katago_binary)
         self.model = Path(model)
         self.config = Path(config)
@@ -131,6 +137,10 @@ class KataGoClient:
             "sgf_sha256": hashlib.sha256(record.path.read_bytes()).hexdigest(),
             "model": str(self.model),
             "visits": self.visits,
+            # Bump when PositionAnalysis.best_moves gains/loses fields, so
+            # caches written before the change are transparently invalidated
+            # instead of silently missing the new keys.
+            "schema": 2,
         }
 
     def _read_cache(self, cache_path: Path, key: dict) -> list[PositionAnalysis] | None:
@@ -191,7 +201,14 @@ class KataGoClient:
                 winrate=root["winrate"],
                 score_lead=root["scoreLead"],
                 best_moves=[
-                    {"move": mi["move"], "scoreLead": mi.get("scoreLead")}
+                    {
+                        "move": mi["move"],
+                        "scoreLead": mi.get("scoreLead"),
+                        "scoreMean": mi.get("scoreMean"),
+                        "winrate": mi.get("winrate"),
+                        "prior": mi.get("prior"),
+                        "order": mi.get("order"),
+                    }
                     for mi in response.get("moveInfos", [])[:self.top_moves]
                 ],
             )

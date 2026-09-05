@@ -1,6 +1,11 @@
+from pathlib import Path
+
 from sgfmill.common import move_from_vertex
 
 from baduk_lab import metrics, report
+from baduk_lab.engine import GameAnalysis
+from baduk_lab.loader import GameRecord
+from baduk_lab.strength import GameStrengthEstimate, SideEstimate
 from factories import PLAYER, build_analysis
 
 
@@ -96,6 +101,77 @@ def test_export_and_load_problem_index_round_trips(tmp_path):
         assert entry.path == report._problem_relpath(problem)
         assert entry.played == problem.played
         assert entry.best == problem.best
+
+
+def _fake_side(rank_value: float) -> SideEstimate:
+    return SideEstimate(
+        sample_count=20, score_sample_count=20, confidence="medium",
+        rank_value=rank_value, quality_score=None, strength_band="3-4d",
+        rank_label=f"{rank_value:.1f} dan", first_choice_rate=0.5,
+        good_move_rate=0.8, mistake_rate=0.0, weighted_point_loss=1.0,
+        average_point_loss=0.5, match_rate=0.6,
+    )
+
+
+def _fake_game(name: str, date: str, focus_color: str = "b") -> GameAnalysis:
+    black = PLAYER if focus_color == "b" else "rival"
+    white = PLAYER if focus_color == "w" else "rival"
+    record = GameRecord(path=Path(name), board_size=19, komi=6.5, player_black=black,
+                        player_white=white, result="B+R", date=date, moves=[])
+    return GameAnalysis(record=record, positions=[])
+
+
+def test_strength_section_sorts_by_date_and_computes_rolling_average():
+    analyses = [
+        _fake_game("second.sgf", "2026-02-01"),
+        _fake_game("first.sgf", "2026-01-01"),
+        _fake_game("third.sgf", "2026-03-01"),
+    ]
+    strengths = {
+        "first.sgf": GameStrengthEstimate(black=_fake_side(4.0), white=None),
+        "second.sgf": GameStrengthEstimate(black=_fake_side(6.0), white=None),
+        "third.sgf": GameStrengthEstimate(black=_fake_side(8.0), white=None),
+    }
+
+    lines = report._strength_section(analyses, strengths, [PLAYER])
+    text = "\n".join(lines)
+
+    # chronological, not input order
+    assert text.index("first.sgf") < text.index("second.sgf") < text.index("third.sgf")
+    # rolling average over {4.0}, {4.0,6.0}, {4.0,6.0,8.0}
+    assert "| 2026-01-01 | first.sgf | Black | 3-4d | 4.0 | 4.0 |" in lines
+    assert "| 2026-02-01 | second.sgf | Black | 3-4d | 6.0 | 5.0 |" in lines
+    assert "| 2026-03-01 | third.sgf | Black | 3-4d | 8.0 | 6.0 |" in lines
+
+
+def test_strength_section_omits_undated_and_unresolved_games():
+    undated = _fake_game("undated.sgf", "")
+    no_rank = _fake_game("no_rank.sgf", "2026-01-01")
+    dated = _fake_game("dated.sgf", "2026-01-02")
+    analyses = [undated, no_rank, dated]
+    strengths = {
+        "undated.sgf": GameStrengthEstimate(black=_fake_side(5.0), white=None),
+        "no_rank.sgf": GameStrengthEstimate(
+            black=SideEstimate(sample_count=1, score_sample_count=1, confidence="low",
+                               rank_value=None, quality_score=None, strength_band="Beginner",
+                               rank_label=None, first_choice_rate=0.0, good_move_rate=0.0,
+                               mistake_rate=0.0, weighted_point_loss=0.0, average_point_loss=0.0,
+                               match_rate=0.0),
+            white=None,
+        ),
+        "dated.sgf": GameStrengthEstimate(black=_fake_side(5.0), white=None),
+    }
+
+    lines = report._strength_section(analyses, strengths, [PLAYER])
+    text = "\n".join(lines)
+
+    assert "undated.sgf" not in text
+    assert "no_rank.sgf" not in text
+    assert "dated.sgf" in text
+
+
+def test_strength_section_empty_when_no_strengths():
+    assert report._strength_section([_fake_game("a.sgf", "2026-01-01")], {}, [PLAYER]) == []
 
 
 def test_export_game_records_writes_one_entry_per_game(tmp_path):

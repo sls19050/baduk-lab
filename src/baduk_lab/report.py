@@ -14,21 +14,25 @@ Report structure:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from sgfmill import sgf as sgf_lib
 from sgfmill.common import move_from_vertex
 
-from . import metrics
+from . import metrics, strength
 from .engine import GameAnalysis
+from .strength import GameStrengthEstimate, SideEstimate
 
 
 def render_report(out_dir: Path, *, player: str, analyses: list[GameAnalysis],
                   phase_loss: metrics.PhaseLoss, magnitude: metrics.MagnitudeProfile,
                   ahead_behind: metrics.AheadBehindSplit,
                   problems: list[metrics.ProblemPosition],
-                  model: str, visits: int) -> Path:
+                  model: str, visits: int,
+                  player_aliases: Sequence[str] | None = None,
+                  strengths: dict[str, GameStrengthEstimate] | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     dates = sorted(a.record.date for a in analyses if a.record.date)
     date_range = f"{dates[0]} to {dates[-1]}" if dates else "unknown"
@@ -72,6 +76,9 @@ def render_report(out_dir: Path, *, player: str, analyses: list[GameAnalysis],
         "",
         _ahead_behind_takeaway(ahead_behind),
         "",
+    ]
+    lines += _strength_section(analyses, strengths or {}, player_aliases)
+    lines += [
         "## Problem set",
         "",
         f"{len(problems)} positions extracted to `problems/` "
@@ -117,6 +124,78 @@ def _ahead_behind_takeaway(ahead_behind: metrics.AheadBehindSplit) -> str:
         return ("**Takeaway:** your move quality drops more when you're behind than when "
                 "you're ahead — you may be flailing.")
     return "**Takeaway:** your move quality is roughly stable whether ahead or behind."
+
+
+def _your_side(analysis: GameAnalysis, estimate: GameStrengthEstimate,
+               player_aliases: Sequence[str] | None) -> tuple[SideEstimate | None, str]:
+    you_color = analysis.record.color_of(player_aliases) if player_aliases else None
+    if you_color == "b":
+        return estimate.black, "Black"
+    if you_color == "w":
+        return estimate.white, "White"
+    return None, "-"
+
+
+def strength_timeline(analyses: list[GameAnalysis], strengths: dict[str, GameStrengthEstimate],
+                      player_aliases: Sequence[str] | None
+                      ) -> list[tuple[str, str, str, SideEstimate]]:
+    """(date, game, you_label, your SideEstimate) rows, chronological, for
+    every game with both a parseable date and a numeric rank_value for your
+    side -- undated games can't be placed on a timeline, and a band alone
+    (no rank_value, e.g. the model/xgboost isn't available) can't be
+    rolling-averaged. Shared by the markdown table below and
+    strength_chart.py so both read the same filtering rules."""
+    rows = []
+    for analysis in analyses:
+        estimate = strengths.get(analysis.record.path.name)
+        if estimate is None or not analysis.record.date:
+            continue
+        you, you_label = _your_side(analysis, estimate, player_aliases)
+        if you is None or you.rank_value is None:
+            continue
+        rows.append((analysis.record.date, analysis.record.path.name, you_label, you))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def _strength_section(analyses: list[GameAnalysis], strengths: dict[str, GameStrengthEstimate],
+                      player_aliases: Sequence[str] | None) -> list[str]:
+    if not strengths:
+        return []
+
+    rows = strength_timeline(analyses, strengths, player_aliases)
+    if not rows:
+        return []
+
+    lines = [
+        "## Strength estimate over time (experimental)",
+        "",
+        "Ported from LizzieYzy Next's XGBoost20TUN strength model -- see "
+        "`src/baduk_lab/models/strength/NOTICE.md` for provenance. For review "
+        "reference only, not a rating: the underlying model was trained on "
+        "1-9 dan amateur and professional games, so it has little resolution "
+        "below roughly 1-2 kyu -- the coarse band is guardrail-driven and "
+        "usually more trustworthy than the numeric label at weaker levels. "
+        "Single-game rank values are noisy (small per-game sample), so read "
+        f"the rolling average (last {strength.ROLLING_WINDOW} games) over the raw "
+        "per-game number. Games with no parseable date, or with too few "
+        "analyzed moves to produce a rank value, are omitted here. See "
+        "`strength_chart.html` in this same folder for a graph of this "
+        "same data.",
+        "",
+        "| Date | Game | You | Your band | Rank value | Rolling avg "
+        f"({strength.ROLLING_WINDOW}) |",
+        "|------|------|-----|-----------|------------|"
+        f"{'-' * (len(str(strength.ROLLING_WINDOW)) + 14)}|",
+    ]
+    rolling_avgs = strength.rolling_average([you.rank_value for *_, you in rows], strength.ROLLING_WINDOW)
+    for (date, game, you_label, you), rolling_avg in zip(rows, rolling_avgs):
+        lines.append(
+            f"| {date} | {game} | {you_label} | {you.strength_band} | "
+            f"{you.rank_value:.1f} | {rolling_avg:.1f} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _problem_relpath(problem: metrics.ProblemPosition) -> str:
