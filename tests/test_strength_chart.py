@@ -34,7 +34,7 @@ def test_render_strength_chart_handles_empty_rows(tmp_path):
 
     assert '<p id="noData" >' in text  # not hidden -> message is visible
     assert 'id="chart-wrap" hidden>' in text
-    assert "No dated games with a resolved rank value" in text
+    assert "No dated, high-confidence games" in text
     assert 'class="point"' not in text
 
 

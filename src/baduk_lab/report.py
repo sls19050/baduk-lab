@@ -140,18 +140,21 @@ def strength_timeline(analyses: list[GameAnalysis], strengths: dict[str, GameStr
                       player_aliases: Sequence[str] | None
                       ) -> list[tuple[str, str, str, SideEstimate]]:
     """(date, game, you_label, your SideEstimate) rows, chronological, for
-    every game with both a parseable date and a numeric rank_value for your
-    side -- undated games can't be placed on a timeline, and a band alone
-    (no rank_value, e.g. the model/xgboost isn't available) can't be
-    rolling-averaged. Shared by the markdown table below and
-    strength_chart.py so both read the same filtering rules."""
+    every game with a parseable date, a numeric rank_value for your side,
+    and "high" confidence -- undated games can't be placed on a timeline, a
+    band alone (no rank_value, e.g. the model/xgboost isn't available) can't
+    be rolling-averaged, and low/medium-confidence estimates (games that
+    ended early or otherwise gave the model too few analyzed moves) are too
+    noisy to report on individually, per strength.SideEstimate.confidence.
+    Shared by the markdown table below and strength_chart.py so both read
+    the same filtering rules."""
     rows = []
     for analysis in analyses:
         estimate = strengths.get(analysis.record.path.name)
         if estimate is None or not analysis.record.date:
             continue
         you, you_label = _your_side(analysis, estimate, player_aliases)
-        if you is None or you.rank_value is None:
+        if you is None or you.rank_value is None or you.confidence != "high":
             continue
         rows.append((analysis.record.date, analysis.record.path.name, you_label, you))
     rows.sort(key=lambda r: r[0])
@@ -178,10 +181,12 @@ def _strength_section(analyses: list[GameAnalysis], strengths: dict[str, GameStr
         "usually more trustworthy than the numeric label at weaker levels. "
         "Single-game rank values are noisy (small per-game sample), so read "
         f"the rolling average (last {strength.ROLLING_WINDOW} games) over the raw "
-        "per-game number. Games with no parseable date, or with too few "
-        "analyzed moves to produce a rank value, are omitted here. See "
-        "`strength_chart.html` in this same folder for a graph of this "
-        "same data.",
+        "per-game number. Games with no parseable date, too few analyzed "
+        "moves to produce a rank value, or fewer than 40 analyzed moves for "
+        "your side (\"low\"/\"medium\" confidence -- typically games that "
+        "ended early by resignation) are omitted here, since their estimate "
+        "is too noisy to trust. See `strength_chart.html` in this same "
+        "folder for a graph of this same data.",
         "",
         "| Date | Game | You | Your band | Rank value | Rolling avg "
         f"({strength.ROLLING_WINDOW}) |",

@@ -26,7 +26,7 @@ PAD_BOTTOM = 40
 def render_strength_chart(rows: list[tuple[str, str, str, SideEstimate]], out_path: Path) -> Path:
     """`rows` is exactly report.strength_timeline()'s output: chronological
     (date, game, you_label, your SideEstimate) tuples, already filtered to
-    those with a parseable date and a numeric rank_value."""
+    those with a parseable date, a numeric rank_value, and high confidence."""
     points = []
     for iso_date, game, you_label, estimate in rows:
         points.append({
@@ -36,7 +36,6 @@ def render_strength_chart(rows: list[tuple[str, str, str, SideEstimate]], out_pa
             "youLabel": you_label,
             "band": estimate.strength_band,
             "rankValue": estimate.rank_value,
-            "confidence": estimate.confidence,
         })
 
     rank_values = [p["rankValue"] for p in points]
@@ -164,7 +163,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <h1>Strength estimate over time</h1>
 <div class="sub">
-  __COUNT__ game(s) with a dated, resolved rank value. Dots are individual games (noisy);
+  __COUNT__ game(s) with a dated, resolved, high-confidence rank value. Low/medium-confidence
+  games (typically ones that ended early, e.g. by resignation, leaving too few analyzed moves)
+  are excluded -- their estimate is too noisy to plot. Dots are individual games (still noisy);
   the green line is the rolling average over the last __WINDOW__ games -- read that, not
   single dots. Dashed lines mark strength-band boundaries. Ported from LizzieYzy Next's
   XGBoost20TUN model -- for review reference only, not a rating.
@@ -177,7 +178,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <span><span class="swatch swatch-dot"></span>per-game rank value</span>
   <span><span class="swatch swatch-avg"></span>rolling average (__WINDOW__ games)</span>
 </div>
-<p id="noData" __HIDE_IF_DATA__>No dated games with a resolved rank value yet -- run `baduk-lab analyze` first.</p>
+<p id="noData" __HIDE_IF_DATA__>No dated, high-confidence games yet -- run `baduk-lab analyze` first.</p>
 
 <script>
 const DATA = __DATA__;
@@ -191,7 +192,7 @@ document.querySelectorAll('.point').forEach(el => {
     const p = DATA[+el.getAttribute('data-idx')];
     tooltip.innerHTML = `<b>${p.game}</b><br>${p.date} &middot; you played ${p.youLabel}<br>` +
       `Band: ${p.band}<br>Rank value: ${p.rankValue.toFixed(1)} ` +
-      `(rolling avg: ${p.rollingAvg.toFixed(1)})<br>Confidence: ${p.confidence}`;
+      `(rolling avg: ${p.rollingAvg.toFixed(1)})`;
     const rect = chartWrap.getBoundingClientRect();
     const cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy'));
     const scaleX = rect.width / 960;

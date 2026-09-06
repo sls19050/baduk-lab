@@ -103,9 +103,9 @@ def test_export_and_load_problem_index_round_trips(tmp_path):
         assert entry.best == problem.best
 
 
-def _fake_side(rank_value: float) -> SideEstimate:
+def _fake_side(rank_value: float, confidence: str = "high") -> SideEstimate:
     return SideEstimate(
-        sample_count=20, score_sample_count=20, confidence="medium",
+        sample_count=20, score_sample_count=20, confidence=confidence,
         rank_value=rank_value, quality_score=None, strength_band="3-4d",
         rank_label=f"{rank_value:.1f} dan", first_choice_rate=0.5,
         good_move_rate=0.8, mistake_rate=0.0, weighted_point_loss=1.0,
@@ -168,6 +168,25 @@ def test_strength_section_omits_undated_and_unresolved_games():
     assert "undated.sgf" not in text
     assert "no_rank.sgf" not in text
     assert "dated.sgf" in text
+
+
+def test_strength_section_omits_low_and_medium_confidence_games():
+    low = _fake_game("low.sgf", "2026-01-01")
+    medium = _fake_game("medium.sgf", "2026-01-02")
+    high = _fake_game("high.sgf", "2026-01-03")
+    analyses = [low, medium, high]
+    strengths = {
+        "low.sgf": GameStrengthEstimate(black=_fake_side(5.0, confidence="low"), white=None),
+        "medium.sgf": GameStrengthEstimate(black=_fake_side(5.0, confidence="medium"), white=None),
+        "high.sgf": GameStrengthEstimate(black=_fake_side(5.0, confidence="high"), white=None),
+    }
+
+    lines = report._strength_section(analyses, strengths, [PLAYER])
+    text = "\n".join(lines)
+
+    assert "low.sgf" not in text
+    assert "medium.sgf" not in text
+    assert "high.sgf" in text
 
 
 def test_strength_section_empty_when_no_strengths():

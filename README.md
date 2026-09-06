@@ -96,8 +96,12 @@ Given ~8+ games, one markdown report containing:
    kyu/dan/pro band and a continuous rank value, plus a rolling average
    across your last 10 games so single noisy games don't skew what you
    read as your trend -- both in `report.md`'s table and as a graph in
-   `strength_chart.html`. Ported from LizzieYzy Next's XGBoost20TUN model;
-   see [src/baduk_lab/models/strength/NOTICE.md](src/baduk_lab/models/strength/NOTICE.md)
+   `strength_chart.html`. Only "high confidence" games (40+ analyzed moves
+   for your side) are reported -- short games, e.g. ones that ended early
+   by resignation, don't give the model enough signal and are left out
+   rather than shown as misleading data points. Ported from LizzieYzy
+   Next's XGBoost20TUN model; see
+   [src/baduk_lab/models/strength/NOTICE.md](src/baduk_lab/models/strength/NOTICE.md)
    for what that means for this repo's license.
 
 Planned, not in MVP:
@@ -384,7 +388,8 @@ feeds `strength_chart.py`, alongside `quiz.py`/`quiz_html.py`.
 - `report.py` — renders the four metric objects into `report.md` (one
   plain-language takeaway per section) plus a chronological strength-estimate
   table (`strength_timeline()`, with a rolling average since single-game
-  rank values are noisy), `export_problem_sgfs()`, which
+  rank values are noisy; only "high confidence" games make the table --
+  see `strength.SideEstimate.confidence`), `export_problem_sgfs()`, which
   writes one SGF per problem position grouped into phase subfolders — the
   game up to the mistake, plus sibling variations for what was played vs.
   KataGo's preferred move, so the answer isn't spoiled on open —
