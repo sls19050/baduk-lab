@@ -170,6 +170,67 @@ Now you have one install for HumanSL (on OpenCL/CUDA, whichever build
 handles that net) and one dedicated to fast TensorRT analysis, and they
 never fight over shared config.
 
+## A manual Human SL 9d engine for Genmove mode (to get a timed clock)
+
+The built-in **"Human-style game"** mode (the one the KataGo Auto Setup
+wizard configures above) has no time-setting UI for the player at all —
+fine for casual play, useless if you want to practice under a clock.
+**"New game (Genmove mode)"**, by contrast, does have time settings *and*
+lets you manually pick any engine from `leelaz.engine-settings-list` (the
+same list the manual GTP command earlier in this doc adds to). So instead
+of the built-in HumanSL feature, add a second, ordinary GTP engine entry
+that plays human-style, and use it from Genmove mode.
+
+The KataGo release archive already ships a ready-made config for exactly
+this — `gtp_human9d_search_example.cfg` (next to `default_gtp.cfg` /
+`analysis_example.cfg`). Unlike the raw HumanSL net alone (which does
+*not* actually play at 9d strength despite the profile name — see the
+comments in `gtp_human5k_example.cfg`), this one layers KataGo's own
+search on top of the human-SL policy (`humanSLProfile = preaz_9d` +
+`maxVisits = 400`) to actually reach roughly 9d/superhuman strength while
+still biasing toward human-style moves. Copy it to a stable filename
+first (the `_example` file may get overwritten if you ever re-extract a
+KataGo release into the same folder):
+
+```powershell
+Copy-Item katago\gtp_human9d_search_example.cfg katago\gtp_human_9d.cfg
+```
+
+Then add an engine command that passes **both** a normal KataGo model
+(`-model`, for the search) and the HumanSL net (`-human-model`, downloaded
+by the Auto Setup wizard into `user-data\human-sl-models\` — reuse that
+same file rather than downloading it again):
+
+```
+"C:\path\to\katago\katago.exe" gtp -model "C:\path\to\katago\models\<net>.bin" -human-model "C:\path\to\LizzieYzy Next\user-data\human-sl-models\b18c384nbt-humanv0.bin.gz" -config "C:\path\to\katago\gtp_human_9d.cfg"
+```
+
+**Use the plain OpenCL/CUDA `katago.exe`, not a `katago-trt/` build** —
+same reason as the section above: TensorRT chokes silently on the small
+HumanSL net. This matters even though you're adding a one-off manual
+engine rather than going through the Auto Setup wizard — the failure is
+about the net, not which code path launches it.
+
+Two things that aren't bugs if you hit them:
+
+- **The engine has to be started before you start the game**, not
+  after — picking it from the dropdown and then clicking into a game in
+  progress does nothing; nothing gets logged to `gtp_logs\` and it just
+  silently keeps using whatever engine was already running. Select it,
+  start the engine, *then* start the new game.
+- **This engine ignores whatever time setting you give it** — `maxVisits
+  = 400` is a fixed visit count per move (plus a random ~2-10s pacing
+  delay from `delayMoveScale`/`delayMoveMax`), not a time budget, so
+  Genmove mode's clock only really constrains *your* moves. That's
+  usually what you want anyway (practicing under time pressure yourself
+  against a fixed-strength opponent) — just don't expect the engine to
+  visibly speed up or slow down if you change the time control.
+
+To adjust strength/style, edit `katago\gtp_human_9d.cfg` directly:
+`humanSLProfile` picks the imitated rank (e.g. `preaz_7d`, `rank_5d`), and
+`humanSLChosenMovePiklLambda` trades strength for humanness (smaller =
+weaker/more human-like, larger = stronger/more KataGo-like).
+
 ## The #1 way to make config edits vanish: editing `config.txt` while the app is open
 
 `user-data\config.txt` is not just a settings file you edit and forget —
