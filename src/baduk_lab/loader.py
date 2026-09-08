@@ -21,6 +21,11 @@ from sgfmill import sgf
 
 logger = logging.getLogger(__name__)
 
+# Folder name `tidy.tidy_folder()` quarantines exact-duplicate games into.
+# Defined here (not in tidy.py) so load_folder can skip it without a
+# circular import -- tidy.py imports this back for its own use.
+QUARANTINE_DIRNAME = "duplicates"
+
 
 @dataclass
 class Move:
@@ -217,8 +222,10 @@ def load_gib(path: Path) -> GameRecord:
 def load_folder(folder: Path) -> list[GameRecord]:
     """Load every .sgf/.gib file in a folder (recursively -- Tygem's own
     Gibo/YYYY-MM/ layout needs this), skipping unparseable files with a
-    warning."""
+    warning. Skips any `duplicates/` folder `tidy.tidy_folder()` may have
+    quarantined games into, so a tidied folder isn't double-counted."""
     paths = sorted(list(folder.rglob("*.sgf")) + list(folder.rglob("*.gib")))
+    paths = [p for p in paths if QUARANTINE_DIRNAME not in p.relative_to(folder).parts[:-1]]
     records = []
     for path in paths:
         try:

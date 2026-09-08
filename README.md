@@ -181,6 +181,33 @@ so your server handle is enough. Pass a comma-separated list
 (`--player "handle1,handle2"`) if you've played under more than one
 account/handle -- any of them counts as you.
 
+### Tidying a messy games folder: `baduk-lab tidy`
+
+Games saved by hand from a client UI (KGS's own save dialog, LizzieYzy's
+game-record export, etc.) tend to pile up under whatever name the client
+defaulted to -- often just the opponent's handle, sometimes saved twice
+(once plain, once again as a client's own bloated "analyzed" export of
+the same game). `baduk-lab tidy` cleans this up before `analyze` runs:
+
+```bash
+baduk-lab tidy ./my-games/          # renames + quarantines duplicates
+baduk-lab tidy ./my-games/ --dry-run   # preview only, touches nothing
+```
+
+- **Renames** every SGF/`.gib` file to `{date}_{black}-vs-{white}_{result}`
+  (e.g. `2026-09-07_ikirushia-vs-HKA_B+Resign.sgf`), derived from the
+  file's own metadata -- not from the original filename.
+- **Quarantines exact-duplicate games** (identical move sequence, players,
+  date, and result -- comments/analysis annotations don't count) into a
+  `duplicates/` subfolder rather than deleting them, preferring to keep a
+  plain save over a bulkier engine-analyzed export of the same game.
+- **Never deletes anything**, and is safe to re-run repeatedly as you add
+  new games -- it leaves already-tidied and already-quarantined files
+  alone, so running it regularly (e.g. after every league night) only
+  ever touches what's actually new.
+
+Run it before `analyze`; `analyze` itself doesn't rename/dedup on its own.
+
 ### Skipping the flags: `config.toml`
 
 Copy [`config.example.toml`](config.example.toml) to `config.toml` (it's
@@ -353,6 +380,11 @@ feeds `strength_chart.py`, alongside `quiz.py`/`quiz_html.py`.
   under more than one account) against `PB`/`PW` (or the `.gib` equivalent)
   to pick which color to diagnose. `load_folder()` recurses, so Tygem's own
   `Gibo/YYYY-MM/` layout works unmodified.
+- `tidy.py` — `tidy_folder()` renames SGF/`.gib` files from their own
+  metadata and quarantines exact-duplicate games (identical move sequence,
+  players, date, result) into a `duplicates/` subfolder, never deleting
+  anything; idempotent, so re-running it as new games arrive only touches
+  what's new. Used by `baduk-lab tidy`, ahead of `analyze`.
 - `config.py` — optional `config.toml` reader (player aliases, default games
   folder, and the LizzieYzy executable for the browser quiz's "Deep
   analysis" button) so a single-user setup doesn't need to repeat

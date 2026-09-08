@@ -1,6 +1,7 @@
 """Command-line interface.
 
 Target usage:
+    baduk-lab tidy ./my-games/
     baduk-lab analyze ./my-games/ --player donghalee --out report/ \
         --katago /path/to/katago --model /path/to/model.bin.gz --visits 500
     baduk-lab review --out report/
@@ -25,7 +26,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, metrics, quiz, quiz_html, report, strength, strength_chart
+from . import config, metrics, quiz, quiz_html, report, strength, strength_chart, tidy
 from .engine import GameAnalysis, KataGoClient
 from .loader import load_folder
 
@@ -83,6 +84,14 @@ def main() -> None:
     analyze.add_argument("--config", help="Path to analysis config")
     analyze.add_argument("--visits", type=int, default=500)
 
+    tidy_cmd = sub.add_parser(
+        "tidy", help="Rename SGF/.gib files from their own metadata and "
+                     "quarantine duplicate games in a folder")
+    tidy_cmd.add_argument("folder", help="Folder to tidy (recursed into)")
+    tidy_cmd.add_argument("--dry-run", action="store_true",
+                          help="Show planned renames/duplicate moves without "
+                               "touching any files")
+
     review = sub.add_parser("review", help="Run a quiz session over your problem set")
     review.add_argument("--out", default="report",
                         help="Report directory from a prior `analyze` run")
@@ -101,6 +110,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "analyze":
         _run_analyze(args)
+    elif args.command == "tidy":
+        _run_tidy(args)
     elif args.command == "review":
         _run_review(args)
 
@@ -180,6 +191,31 @@ def _run_analyze(args: argparse.Namespace) -> None:
     logger.info("Strength chart written to %s", chart_path)
     logger.info("%d problems tracked for review (run `baduk-lab review --out %s`)",
                len(problems), out_dir)
+
+
+def _run_tidy(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    folder = Path(args.folder)
+    if not folder.is_dir():
+        sys.exit(f"Not a folder: {folder}")
+
+    result = tidy.tidy_folder(folder, dry_run=args.dry_run)
+
+    rename_verb = "Would rename" if args.dry_run else "Renamed"
+    for old, new in result.renamed:
+        logger.info("%s: %s -> %s", rename_verb, old.name, new.name)
+
+    move_verb = "Would quarantine" if args.dry_run else "Quarantined"
+    for old, new in result.quarantined:
+        logger.info("%s duplicate: %s -> %s", move_verb, old.relative_to(folder), new.relative_to(folder))
+
+    for path, reason in result.skipped:
+        logger.warning("Skipping %s: %s", path.name, reason)
+
+    suffix = " (dry run, nothing changed)" if args.dry_run else ""
+    logger.info("%d renamed, %d duplicate(s) quarantined, %d skipped%s",
+               len(result.renamed), len(result.quarantined), len(result.skipped), suffix)
 
 
 def _resolve_problem_sgf_path(problems_dir: Path, rel_path: str | None) -> Path | None:
