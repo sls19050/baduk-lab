@@ -9,3 +9,16 @@ raw/
 /games/
 analysis_logs/
 /config.toml
+
+# Engine and GUI installs, unpacked next to the source (hundreds of MB)
+/katago/
+/katago-cuda/
+/katago-trt/
+/lizzieyzy-next/
+/lizzieyzy-next-fast/
+*.zip
+*.exe
+
+# Engine logs
+gtp_logs/
+*.log
