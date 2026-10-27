@@ -2,6 +2,7 @@ __pycache__/
 *.egg-info/
 .venv/
 report/
+selfplay/
 raw/
 *.sgf
 !tests/fixtures/*.sgf

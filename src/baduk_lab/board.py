@@ -48,6 +48,22 @@ def _group_and_liberties(board: dict[Coord, str], start: Coord, color: str,
     return seen, liberties
 
 
+def _play(board: dict[Coord, str], color: str, coord: Coord, board_size: int) -> int:
+    """Place one stone in-place, removing captured opponent groups.
+    Returns how many stones were captured."""
+    board[coord] = color
+    opponent = "w" if color == "b" else "b"
+    captured = 0
+    for n in _neighbors(coord, board_size):
+        if board.get(n) == opponent:
+            group, liberties = _group_and_liberties(board, n, opponent, board_size)
+            if not liberties:
+                captured += len(group)
+                for pos in group:
+                    del board[pos]
+    return captured
+
+
 def board_before(moves: Iterable[MoveTuple], board_size: int,
                  move_number: int) -> dict[Coord, str]:
     """Board state right before `move_number` is played (i.e. after
@@ -62,12 +78,30 @@ def board_before(moves: Iterable[MoveTuple], board_size: int,
             break
         if coord is None:  # pass
             continue
-        board[coord] = color
-        opponent = "w" if color == "b" else "b"
-        for n in _neighbors(coord, board_size):
-            if board.get(n) == opponent:
-                group, liberties = _group_and_liberties(board, n, opponent, board_size)
-                if not liberties:
-                    for pos in group:
-                        del board[pos]
+        _play(board, color, coord, board_size)
     return board
+
+
+def single_stone_captures(moves: Iterable[MoveTuple], board_size: int) -> set[int]:
+    """Move numbers that captured exactly one stone -- every ko capture
+    does, so drill.py uses "one of the last few moves was a single-stone
+    capture" as a cheap stand-in for "a ko fight may be going on"."""
+    board: dict[Coord, str] = {}
+    out: set[int] = set()
+    for number, color, coord in moves:
+        if coord is None:
+            continue
+        if _play(board, color, coord, board_size) == 1:
+            out.add(number)
+    return out
+
+
+def group_and_liberties(board: dict[Coord, str], start: Coord,
+                        board_size: int) -> tuple[set[Coord], set[Coord]]:
+    """Public wrapper: the group containing the stone at `start` and its
+    liberties."""
+    return _group_and_liberties(board, start, board[start], board_size)
+
+
+def neighbors(pos: Coord, board_size: int) -> list[Coord]:
+    return list(_neighbors(pos, board_size))

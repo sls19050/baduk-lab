@@ -88,12 +88,18 @@ class GameAnalysis:
 
 class KataGoClient:
     def __init__(self, katago_binary: Path, model: Path, config: Path,
-                 visits: int = 500, top_moves: int = 16):
+                 visits: int = 500, top_moves: int = 16,
+                 config_overrides: dict[str, object] | None = None):
         self.katago_binary = Path(katago_binary)
         self.model = Path(model)
         self.config = Path(config)
         self.visits = visits
         self.top_moves = top_moves
+        # Passed as -override-config, e.g. {"numAnalysisThreads": 16} for
+        # callers (selfplay/drill) that keep many small queries in flight at
+        # once, where the config's few-wide-searches tuning would starve the
+        # GPU of batch.
+        self.config_overrides = config_overrides or {}
         self._process: subprocess.Popen | None = None
 
     def __enter__(self) -> "KataGoClient":
@@ -106,9 +112,13 @@ class KataGoClient:
         # Deferred so that a run where every game is already cached never
         # pays the cost of loading the neural net at all.
         if self._process is None:
+            command = [str(self.katago_binary), "analysis",
+                       "-config", str(self.config), "-model", str(self.model)]
+            if self.config_overrides:
+                command += ["-override-config",
+                            ",".join(f"{k}={v}" for k, v in self.config_overrides.items())]
             self._process = subprocess.Popen(
-                [str(self.katago_binary), "analysis",
-                 "-config", str(self.config), "-model", str(self.model)],
+                command,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 encoding="utf-8", bufsize=1,
             )
@@ -131,6 +141,41 @@ class KataGoClient:
         positions = self._query(record)
         self._write_cache(cache_path, key, positions)
         return GameAnalysis(record=record, positions=positions)
+
+    def run_queries(self, queries: list[dict]) -> dict[str, dict]:
+        """Send several single-turn queries at once and return each one's
+        final response, keyed by query id. Every query must carry a unique
+        "id" and exactly one entry in "analyzeTurns".
+
+        Sending them all before reading lets KataGo search them in parallel
+        (up to numAnalysisThreads), batching their NN evals on the GPU --
+        how selfplay.py advances many games per round. Responses are raw
+        KataGo JSON: rootInfo/moveInfos values are Black's perspective
+        (see the module docstring), including each moveInfo's scoreLead.
+        """
+        self._ensure_started()
+        for query in queries:
+            self._process.stdin.write(json.dumps(query) + "\n")
+        self._process.stdin.flush()
+
+        pending = {q["id"] for q in queries}
+        results: dict[str, dict] = {}
+        while pending:
+            line = self._process.stdout.readline()
+            if not line:
+                stderr = self._process.stderr.read()
+                raise RuntimeError(f"KataGo process ended unexpectedly: {stderr}")
+            response = json.loads(line)
+            if "error" in response:
+                raise RuntimeError(f"KataGo rejected query {response.get('id')}: "
+                                   f"{response['error']}")
+            query_id = response.get("id")
+            if (query_id not in pending or response.get("isDuringSearch")
+                    or "turnNumber" not in response):
+                continue  # warnings, other ids, partial results
+            results[query_id] = response
+            pending.discard(query_id)
+        return results
 
     def _cache_key(self, record: GameRecord) -> dict:
         return {

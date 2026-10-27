@@ -26,7 +26,8 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, metrics, quiz, quiz_html, report, strength, strength_chart, tidy
+from . import (config, drill, drill_html, metrics, quiz, quiz_html, report, selfplay,
+               strength, strength_chart, tidy)
 from .engine import GameAnalysis, KataGoClient
 from .loader import load_folder
 
@@ -107,6 +108,52 @@ def main() -> None:
                              "(not opened as a plain file) so the page can save "
                              "your answers back to quiz_state.json; Ctrl+C to stop.")
 
+    drill_cmd = sub.add_parser(
+        "drill", help="Middle-game 'answer or tenuki?' drill from self-play "
+                      "of seed openings (see MIDGAME_DRILL_DESIGN.md)")
+    drill_sub = drill_cmd.add_subparsers(dest="drill_command", required=True)
+
+    gen = drill_sub.add_parser("generate", help="Self-play seed openings into middle games")
+    gen.add_argument("--seeds", default="seeds", help="Folder of seed opening SGFs")
+    gen.add_argument("--selfplay", default="selfplay", help="Where generated games go")
+    gen.add_argument("--games-per-seed", type=int, default=20,
+                     help="Top each seed up to this many games (incremental)")
+    gen.add_argument("--gen-visits", type=int, default=selfplay.GenSettings.gen_visits)
+    gen.add_argument("--stop-at", type=int, default=selfplay.GenSettings.stop_at)
+    gen.add_argument("--loss-budget", type=float, default=selfplay.GenSettings.loss_budget)
+    gen.add_argument("--temperature", type=float, default=selfplay.GenSettings.temperature)
+    gen.add_argument("--parallel", type=int, default=16,
+                     help="Games advanced together (one batched query per round)")
+    _add_katago_args(gen)
+
+    build = drill_sub.add_parser("build", help="Probe generated games into a drill deck")
+    build.add_argument("--selfplay", default="selfplay", help="Folder of generated games")
+    build.add_argument("--out", default="report/drill", help="Drill deck directory")
+    build.add_argument("--visits", type=int, default=drill.DrillSettings.visits)
+    build.add_argument("--screen-visits", type=int, default=drill.DrillSettings.screen_visits)
+    build.add_argument("--min-gap", type=float, default=drill.DrillSettings.min_gap)
+    build.add_argument("--score-window", type=float, default=drill.DrillSettings.score_window,
+                       help="Max |score lead| for the side to move, in points")
+    build.add_argument("--radius", type=int, default=drill.DrillSettings.radius)
+    build.add_argument("--max-games", type=int,
+                       help="Probe at most this many not-yet-cached games, then stop "
+                            "(0 just rewrites the deck from the cache). "
+                            "Rerun to continue where it left off -- each run restarts "
+                            "the engine, so a long build can be done in batches without "
+                            "its memory use piling up.")
+    build.add_argument("--group", type=int, default=8,
+                       help="Games probed together per engine phase (lower uses less memory)")
+    _add_katago_args(build)
+
+    drill_review = drill_sub.add_parser("review", help="Drill session in the browser")
+    drill_review.add_argument("--out", default="report/drill", help="Drill deck directory")
+    drill_review.add_argument("--limit", type=int, default=20)
+    drill_review.add_argument("--tenuki-share", type=float, default=0.6,
+                              help="Share of tenuki-answer positions per session")
+    drill_review.add_argument("--score-tolerance", type=float, default=drill.SCORE_TOLERANCE,
+                              help="A score estimate within this many points counts as "
+                                   "right (re-renders the page; no rebuild needed)")
+
     args = parser.parse_args()
     if args.command == "analyze":
         _run_analyze(args)
@@ -114,11 +161,18 @@ def main() -> None:
         _run_tidy(args)
     elif args.command == "review":
         _run_review(args)
+    elif args.command == "drill":
+        {"generate": _run_drill_generate, "build": _run_drill_build,
+         "review": _run_drill_review}[args.drill_command](args)
 
 
-def _run_analyze(args: argparse.Namespace) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+def _add_katago_args(cmd: argparse.ArgumentParser) -> None:
+    cmd.add_argument("--katago", help="Path to katago binary")
+    cmd.add_argument("--model", help="Path to neural net model")
+    cmd.add_argument("--config", help="Path to analysis config")
 
+
+def _resolve_katago(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     katago, model, engine_config = args.katago, args.model, args.config
     if not (katago and model and engine_config):
         found = _find_local_katago() or _find_katrain_katago()
@@ -128,6 +182,13 @@ def _run_analyze(args: argparse.Namespace) -> None:
         katago = katago or found[0]
         model = model or found[1]
         engine_config = engine_config or found[2]
+    return Path(katago), Path(model), Path(engine_config)
+
+
+def _run_analyze(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    katago, model, engine_config = _resolve_katago(args)
 
     player_aliases = ([p.strip() for p in args.player.split(",") if p.strip()]
                       if args.player else config.player_aliases())
@@ -439,6 +500,84 @@ def _run_review(args: argparse.Namespace) -> None:
 
     remaining = len(quiz.due_problems(state, problems, today))
     print(f"\nReviewed {reviewed}, correct {correct}. {remaining} still due today.")
+
+
+# Many small searches in flight instead of the config's few wide ones: the
+# drill's queries are cheap (100-500 visits) and numerous, so batch width
+# across positions is what keeps the GPU busy.
+_DRILL_ENGINE_OVERRIDES = {"numAnalysisThreads": 16, "numSearchThreadsPerAnalysisThread": 4}
+
+
+def _run_drill_generate(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    seeds = selfplay.load_seeds(Path(args.seeds))
+    if not seeds:
+        sys.exit(f"No seed SGFs found in {args.seeds}")
+    settings = selfplay.GenSettings(gen_visits=args.gen_visits, stop_at=args.stop_at,
+                                    loss_budget=args.loss_budget,
+                                    temperature=args.temperature)
+    katago, model, engine_config = _resolve_katago(args)
+    overrides = dict(_DRILL_ENGINE_OVERRIDES, numAnalysisThreads=args.parallel)
+    with KataGoClient(katago, model, engine_config, visits=args.gen_visits,
+                      config_overrides=overrides) as client:
+        result = selfplay.generate(client, seeds, args.games_per_seed,
+                                   Path(args.selfplay), settings, parallel=args.parallel)
+    print(f"Generated {result['generated']} game(s) "
+          f"({result['abandoned']} stopped early) into {args.selfplay}/. "
+          f"Next: baduk-lab drill build")
+
+
+def _run_drill_build(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    selfplay_dir = Path(args.selfplay)
+    if not any(selfplay_dir.rglob("g*.gen.json")):
+        sys.exit(f"No generated games in {selfplay_dir}. Run `baduk-lab drill generate` first.")
+    settings = drill.DrillSettings(visits=args.visits, screen_visits=args.screen_visits,
+                                   min_gap=args.min_gap, score_window=args.score_window,
+                                   radius=args.radius)
+    out_dir = Path(args.out)
+    katago, model, engine_config = _resolve_katago(args)
+    with KataGoClient(katago, model, engine_config, visits=args.visits,
+                      config_overrides=_DRILL_ENGINE_OVERRIDES) as client:
+        problems = drill.build(client, selfplay_dir, out_dir, settings, model=str(model),
+                               group=args.group, max_games=args.max_games)
+
+    state_path = out_dir / "drill_state.json"
+    state = quiz.load_state(state_path)
+    quiz.sync_new_problems(state, problems, date.today())
+    quiz.save_state(state_path, state)
+    n_tenuki = sum(p.kind == "tenuki" for p in problems)
+    remaining = sum(1 for _ in selfplay_dir.rglob("g*.gen.json")) - len(
+        list((out_dir / "cache").rglob("*.json")))
+    print(f"{len(problems)} drill position(s): {n_tenuki} tenuki, "
+          f"{len(problems) - n_tenuki} answer-locally."
+          + (f" {remaining} game(s) still unprobed -- rerun `baduk-lab drill build` "
+             f"to add more." if remaining > 0 else "")
+          + " Next: baduk-lab drill review")
+
+
+def _run_drill_review(args: argparse.Namespace) -> None:
+    out_dir = Path(args.out)
+    problems_dir = out_dir / "problems"
+    if not (problems_dir / "index.json").exists():
+        sys.exit(f"No {problems_dir / 'index.json'} found. Run `baduk-lab drill build` first.")
+    problems = drill.load_index(problems_dir)
+    state_path = out_dir / "drill_state.json"
+    state = quiz.load_state(state_path)
+    today = date.today()
+    quiz.sync_new_problems(state, problems, today)
+    quiz.save_state(state_path, state)
+
+    due = quiz.due_problems(state, problems, today)
+    session = drill.compose_session(due, args.limit, tenuki_share=args.tenuki_share)
+    if not session:
+        print("Nothing due for review right now. Nice.")
+        return
+    games = json.loads((problems_dir / "games.json").read_text(encoding="utf-8"))
+    drill_html.render_drill_html(session, games, out_dir / "drill.html", today,
+                                 score_tolerance=args.score_tolerance)
+    print(f"{len(session)} position(s) ready.")
+    _serve_and_open(out_dir, problems_dir, "drill.html", state_path)
 
 
 if __name__ == "__main__":
