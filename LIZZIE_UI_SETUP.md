@@ -12,11 +12,11 @@ feel.
 The original [featurecat/lizzie](https://github.com/featurecat/lizzie) is
 effectively unmaintained. Use
 **[LizzieYzy Next](https://github.com/wimi321/lizzieyzy-next)** instead —
-it's the actively maintained fork (releases as recently as July 2026,
-bundling KataGo v1.16.5 — the same version this repo's
-[KATAGO_SETUP.md](KATAGO_SETUP.md) has you install) with a "bring your own
-engine" build so it can reuse a KataGo install you already have instead of
-bundling a second copy.
+it's the actively maintained fork (releases as recently as October 2026)
+with a "bring your own engine" build so it can reuse a KataGo install you
+already have instead of bundling a second copy — which is what this repo
+does, pairing it with the single `katago/` build from
+[KATAGO_SETUP.md](KATAGO_SETUP.md).
 
 ## Install
 
@@ -52,13 +52,12 @@ if it also asks for a name/label, anything works, e.g. `KataGo (local)`):
 Keep the quotes exactly as shown — they matter if your path has spaces in
 it (e.g. a username with a space, or a folder like "Local Dev").
 
-Concrete worked example, using the fastest build from a `katago-trt/` +
-`katago/` layout set up per
-[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-per-backend)
+Concrete worked example, using the single `katago/` build set up per
+[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-one-backend)
 (swap in your own base path and net filename):
 
 ```
-"C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago-trt\katago.exe" gtp -model "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\models\kata1-zhizi-b40c768nbt-s11272M-d5935M.bin" -config "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\default_gtp.cfg"
+"C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\katago.exe" gtp -model "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\models\kata1-tf3-b11c768-s12002M-d6304M.bin.gz" -config "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\default_gtp.cfg"
 ```
 
 Using the plain `.bin` net (if you have both `.bin` and `.bin.gz` sitting
@@ -120,55 +119,30 @@ install **TensorRT** for faster analysis on RTX 20/30/40/50 series — see
 [KATAGO_SETUP.md](KATAGO_SETUP.md#cuda-and-tensorrt-setup-nvidia-gpus) if
 you want the manual/non-LizzieYzy equivalent for baduk-lab or KaTrain.
 
-## TensorRT and HumanSL don't mix in one install
+## TensorRT and HumanSL used to need two installs (fixed in v1.17.2)
 
-If you've set up a faster `katago-trt/` build per
-[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-per-backend)
-and pointed the KataGo Auto Setup wizard at it, you may hit a wall trying
-to also use HumanSL: TensorRT can build an engine for a normal-sized
-KataGo net fine, but chokes on the small HumanSL net specifically
-(`b18c384nbt-humanv0.bin.gz` at time of writing).
+Historically, a TensorRT build could analyze a normal KataGo net fine but
+died on the small HumanSL net (`b18c384nbt-humanv0.bin.gz`) — either
+erroring with `OnnxModelBuilder: SGF metadata encoder not yet supported`,
+or silently stopping partway through
+`TensorRT backend: building network via ONNX emitter`, with no error
+dialog at all. And because HumanSL and whole-game-analysis share one
+engine profile (`katago-auto-setup-engine-path` /
+`katago-auto-setup-analysis-config-path`), there was no per-feature switch
+to work around it — hence the old advice here to run a second, fully
+independent portable install dedicated to TensorRT.
 
-**Symptom:** HumanSL games (or the "fast whole-game analysis" feature,
-which shares the same engine profile) fail or hang, with no error dialog.
-Checking the actual katago logs (`analysis_logs/` — the location depends
-on LizzieYzy Next's working directory when it launched the process; search
-the whole repo tree if it's not next to `katago.exe`) shows the pattern:
-the main net's TensorRT engine builds fine, then it starts
-`TensorRT backend: building network via ONNX emitter` for the HumanSL net
-and the log just stops — no error, the process silently dies partway
-through. This is reproducible every time, not a one-off timing issue.
+**KataGo v1.17.2 fixed this**, so on that version or newer a single
+install handles both, and the two-install workaround is obsolete. If you
+still have a spare copy left over from it, migrate its `MyGames/`,
+`AnalyzedGames/` and `EngineGames/` into your main install before deleting
+it — those hold your game records, and the spare may well have more of
+them than the copy you keep.
 
-**There's no per-feature engine switch** — HumanSL and whole-game-analysis
-both read the same `katago-auto-setup-engine-path` /
-`katago-auto-setup-analysis-config-path` settings, so you can't have
-"TensorRT for whole-game-analysis, OpenCL for HumanSL" within one install.
-
-**Fix: run a second, fully independent portable install.** LizzieYzy
-Next's portable build has no installer and no shared system state — it's
-just an unzip — so two copies coexist cleanly with zero conflict:
-
-1. Extract the same release zip into a new sibling folder (e.g.
-   `lizzieyzy-next-fast/` next to your existing `lizzieyzy-next/`).
-2. **Before ever launching it**, copy your existing install's
-   `user-data\config.txt` into the new folder's `user-data\` — this
-   carries over your UI preferences, komi profiles, etc. as a starting
-   point instead of starting from scratch.
-3. While it's still never been launched (see the next section for why
-   this timing matters), hand-edit these fields in the copy to point
-   everywhere at your fast backend:
-   - `katago-auto-setup-engine-path`
-   - `katago-auto-setup-analysis-config-path`
-   - `katago-auto-setup-gtp-config-path`
-   - `analysis-engine-command`
-   - `estimate-command`
-   - each `"command"` field under `leelaz.engine-settings-list`
-4. Leave HumanSL unconfigured in this new install entirely — that's the
-   point of keeping it separate.
-
-Now you have one install for HumanSL (on OpenCL/CUDA, whichever build
-handles that net) and one dedicated to fast TensorRT analysis, and they
-never fight over shared config.
+This repo now runs a single CUDA build (see
+[KATAGO_SETUP.md](KATAGO_SETUP.md#recommended-layout-one-folder-one-backend)),
+which sidesteps the issue entirely and is also the faster backend for the
+transformer nets.
 
 ## A manual Human SL 9d engine for Genmove mode (to get a timed clock)
 
@@ -205,11 +179,11 @@ same file rather than downloading it again):
 "C:\path\to\katago\katago.exe" gtp -model "C:\path\to\katago\models\<net>.bin" -human-model "C:\path\to\LizzieYzy Next\user-data\human-sl-models\b18c384nbt-humanv0.bin.gz" -config "C:\path\to\katago\gtp_human_9d.cfg"
 ```
 
-**Use the plain OpenCL/CUDA `katago.exe`, not a `katago-trt/` build** —
-same reason as the section above: TensorRT chokes silently on the small
-HumanSL net. This matters even though you're adding a one-off manual
-engine rather than going through the Auto Setup wizard — the failure is
-about the net, not which code path launches it.
+**On KataGo older than v1.17.2, use the plain OpenCL/CUDA `katago.exe`,
+not a `katago-trt/` build** — same reason as the section above: those
+versions choke on the small HumanSL net, and the failure is about the net,
+not which code path launches it, so it bites a one-off manual engine just
+as hard as the Auto Setup wizard. On v1.17.2+ any backend works.
 
 Two things that aren't bugs if you hit them:
 

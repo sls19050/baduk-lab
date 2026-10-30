@@ -230,12 +230,10 @@ Tygem's own `Gibo/YYYY-MM/` layout works without pointing at each month.
 `--katago`/`--model`/`--config` are auto-detected in two cases, checked in
 this order:
 
-1. **This repo has its own local KataGo install** — a `katago/` folder (plus
-   optionally faster `katago-cuda/`/`katago-trt/` sibling folders) sitting
-   next to this repo's root, set up per [KATAGO_SETUP.md](KATAGO_SETUP.md).
-   If more than one of `katago-trt/`, `katago-cuda/`, `katago/` exists,
-   the fastest one present is used automatically — no flag needed either
-   way.
+1. **This repo has its own local KataGo install** — a `katago/` folder
+   sitting next to this repo's root, set up per
+   [KATAGO_SETUP.md](KATAGO_SETUP.md), holding the engine, its GPU backend
+   DLLs, the configs and `models/`. No flag needed.
 2. **KaTrain is installed at its default macOS location**
    (`/Applications/KaTrain.app`).
 
@@ -310,9 +308,8 @@ whatever's configured under `[lizzieyzy] exe` in `config.toml` (see
 [config.example.toml](config.example.toml)) with that problem's SGF as an
 argument -- confirmed working with LizzieYzy Next, which opens straight
 into the position with live analysis running, no manual file-opening.
-Point it at a `lizzieyzy-next-fast/`-style build if you have one; this is
-for the "let me actually dig into this position" cases, not routine
-browsing.
+Point it at your LizzieYzy Next install; this is for the "let me actually
+dig into this position" cases, not routine browsing.
 
 Only one LizzieYzy instance (and one KataGo engine) is ever alive across a
 whole quiz session: each click closes whatever the previous click opened

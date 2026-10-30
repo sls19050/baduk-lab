@@ -58,13 +58,15 @@ Pick the build that matches your hardware:
 | Backend | When to use it |
 |---|---|
 | **OpenCL** | Works on almost any semi-modern GPU (NVIDIA, AMD, Intel) without matching driver versions exactly. Good default, especially on older or lower-VRAM GPUs. This is what most Mac installs use, since macOS has no CUDA. |
-| **CUDA** | Fastest on NVIDIA GPUs, but you must match the release's CUDA/cuDNN version to what's installed on your machine. Windows/Linux only. See [CUDA and TensorRT setup](#cuda-and-tensorrt-setup-nvidia-gpus) below. |
+| **CUDA** | Fastest on NVIDIA GPUs, and as of v1.18.x the recommended NVIDIA backend for the transformer nets — upstream now rates it ahead of TensorRT on strong GPUs. You must match the release's CUDA/cuDNN versions to what's installed, and use cuDNN >= 9.8.0 (the 8.9.7 builds are a lot slower on transformers). Windows/Linux only. See [CUDA and TensorRT setup](#cuda-and-tensorrt-setup-nvidia-gpus) below. |
+| **TensorRT** | NVIDIA-only. Was the fastest option on the older convolutional nets, but tends to be slower than CUDA on transformers, has a much longer startup, and its DLLs are a 3+ GB login-gated manual download. Not worth it unless you've benchmarked a win on your own card. |
 | **Eigen** | CPU-only, no GPU required. Much slower — fine for testing, painful for analyzing many games. |
 
 - **macOS:** download the macOS build (OpenCL) and unzip it.
-- **Windows:** download the OpenCL `.zip` unless you specifically want CUDA
-  and know your installed CUDA/cuDNN versions match a listed build. Unzip
-  it anywhere (e.g. `C:\KataGo\`).
+- **Windows:** on an NVIDIA card, take the CUDA `.zip` whose filename
+  matches the CUDA/cuDNN versions you have or can install — that's the
+  fastest path for the transformer nets. Otherwise take the OpenCL `.zip`.
+  Unzip it anywhere (e.g. `C:\KataGo\`).
 
 ### CUDA and TensorRT setup (NVIDIA GPUs)
 
@@ -118,7 +120,7 @@ need to `pip install` anything, just download and unzip.
 1. Find the KataGo Windows CUDA build you want on the
    [releases page](https://github.com/lightvector/KataGo/releases) — the
    filename tells you the exact versions to match, e.g.
-   `katago-v1.17.1-cuda12.8-cudnn9.8.0-windows-x64.zip` means CUDA 12.8 and
+   `katago-v1.18.2-cuda12.8-cudnn9.8.0-windows-x64.zip` means CUDA 12.8 and
    cuDNN 9.8.0.
 2. Download the matching wheels from PyPI (substitute the versions from
    step 1): `nvidia-cuda-runtime-cu12`, `nvidia-cublas-cu12`,
@@ -146,8 +148,9 @@ do need the manual, login-gated download:
    10.x line — don't grab 11 unless you've confirmed a matching KataGo
    release exists).
 3. Pick the **GA version matching the CUDA version** of the KataGo TensorRT
-   build you want — e.g. `katago-v1.17.1-trt10.9.0-cuda12.8-windows-x64.zip`
-   pairs with **TensorRT 10.9 GA**. Reuse whichever CUDA version you
+   build you want — e.g. `katago-v1.18.1-trt10.9.0-cuda12.8-windows-x64.zip`
+   pairs with **TensorRT 10.9 GA**. (TensorRT builds come from v1.18.1;
+   v1.18.2 is a CUDA-only release.) Reuse whichever CUDA version you
    already have the runtime DLLs for (previous section) rather than
    chasing the newest TensorRT — a newer TensorRT usually means a newer
    CUDA pairing too, which means redownloading the CUDA runtime wheels
@@ -171,28 +174,48 @@ present. Fix: copy the actual files from
 normal apiset lookup for some reason). This sidesteps needing to install/
 repair the Visual C++ Redistributable.
 
-### Recommended layout: one folder per backend
+### Recommended layout: one folder, one backend
 
-If you're setting up more than one backend (e.g. keeping OpenCL as a
-fallback while trying CUDA/TensorRT), don't overwrite in place — put each
-build in its own sibling folder (`katago/`, `katago-cuda/`, `katago-trt/`)
-so you can always fall back and A/B benchmark. Only the binary and its
-backend-specific DLLs differ between them; copy the same `models/`,
-`analysis.cfg`, and `default_gtp.cfg` into each folder so every build is
-self-contained (needed for tools like LizzieYzy Next's Auto Setup, which
-expects `analysis.cfg` to sit right next to whichever `katago.exe` you
-point it at — see
+Keep a single `katago/` folder holding the engine, its backend DLLs, the
+configs and `models/`. That's what this repo uses and what baduk-lab's CLI
+auto-detects (see [README.md](README.md#usage)), and tools like LizzieYzy
+Next's Auto Setup expect `analysis.cfg` to sit right next to whichever
+`katago.exe` you point them at (see
 [LIZZIE_UI_SETUP.md](LIZZIE_UI_SETUP.md#katago-auto-setup-and-humansl)).
-baduk-lab's own CLI auto-detects this layout and prefers `katago-trt/` >
-`katago-cuda/` > `katago/` automatically (see [README.md](README.md#usage)).
+
+To A/B a second backend, don't overwrite in place — unzip it into a
+sibling folder (`katago-cuda/`, `katago-trt/`) and copy the same
+`models/`, `analysis.cfg` and `default_gtp.cfg` in so each build is
+self-contained. Only the binary and its backend DLLs differ, but those
+DLLs are nearly all of the disk cost: a TensorRT folder runs 3+ GB, most
+of it `nvinfer_builder_resource_10.dll`. Benchmark, then delete the loser.
+`_LOCAL_KATAGO_BUILDS` in `src/baduk_lab/cli.py` sets the preference order
+when more than one is present.
 
 ### 2. Download a neural net
 
 Get a model from [katagotraining.org/networks](https://katagotraining.org/networks/kata1/).
-Larger nets (more blocks/channels) are stronger but slower and need more
-VRAM. For a GPU with 3-4GB VRAM, stick to a smaller/mid net; 8GB+ can
-handle larger ones comfortably. The file is a single `.bin.gz` (or, for
-very old versions, `.txt.gz`) — save it next to the binary.
+The file is a single `.bin.gz` (or, for very old versions, `.txt.gz`) —
+save it under `models/` next to the binary.
+
+**Prefer a transformer net** (`kata1-tf3-b11c768-*`). The main training
+run switched to these, they need KataGo >= v1.17.x, and they beat the
+older b40 convolutional nets on both axes at once: roughly +80 Elo at
+equal visits *and* far cheaper per visit. Measured here on an RTX 5070 at
+1600 visits / 24 threads, same v1.18.2 CUDA engine:
+
+| Net | Params | visits/s |
+|---|---|---|
+| `kata1-tf3-b11c768-s12002M-d6304M` | 70.4M | 1153 |
+| `kata1-zhizi-b40c768nbt-s11272M-d5935M` | 232.5M | 394 |
+
+Among the older convnets, larger (more blocks/channels) meant stronger but
+slower and more VRAM-hungry; the transformer nets make that tradeoff much
+less painful, and a 12GB card handles `b11c768` comfortably. Pick by
+rating rather than by recency — the newest upload is often provisional,
+rated on zero games. At the time of writing the best-measured were
+`s11003M-d5973M-7gres` (14605 Elo) and `s12002M-d6304M` (14596), both well
+clear of the b40 zhizi nets (~14522).
 
 ### 3. Get a config file
 

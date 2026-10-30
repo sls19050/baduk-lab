@@ -37,11 +37,11 @@ logger = logging.getLogger(__name__)
 # users never need to pass --katago/--model/--config explicitly.
 _KATRAIN_MAC_RESOURCES = Path("/Applications/KaTrain.app/Contents/Resources/katrain")
 
-# This repo's own local KataGo installs (see KATAGO_SETUP.md), fastest backend
-# first. All three share one model/config directory (katago/); only the
-# binary + its GPU backend DLLs differ between katago-trt/katago-cuda/katago.
+# This repo's own local KataGo install (see KATAGO_SETUP.md): one CUDA build in
+# katago/, holding the engine, its GPU backend DLLs, the configs and models/.
+# Kept as a list so a second backend build can be dropped in alongside later.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_LOCAL_KATAGO_BUILDS = ["katago-trt", "katago-cuda", "katago"]
+_LOCAL_KATAGO_BUILDS = ["katago"]
 
 
 def _find_katrain_katago() -> tuple[Path, Path, Path] | None:

@@ -36,7 +36,6 @@ def default_folder() -> Path | None:
 def lizzieyzy_exe() -> Path | None:
     """LizzieYzy Next executable, used by quiz.html's "deep analysis" button
     (review --html) to open a problem position for live/continuous
-    analysis. Point this at whichever install you want triggered -- e.g.
-    a lizzieyzy-next-fast/ TensorRT build for quick deep dives."""
+    analysis. Point this at whichever install you want triggered."""
     exe = _load().get("lizzieyzy", {}).get("exe")
     return Path(exe) if exe else None
