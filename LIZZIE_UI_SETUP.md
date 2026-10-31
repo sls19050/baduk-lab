@@ -200,10 +200,42 @@ Two things that aren't bugs if you hit them:
   against a fixed-strength opponent) — just don't expect the engine to
   visibly speed up or slow down if you change the time control.
 
-To adjust strength/style, edit `katago\gtp_human_9d.cfg` directly:
-`humanSLProfile` picks the imitated rank (e.g. `preaz_7d`, `rank_5d`), and
-`humanSLChosenMovePiklLambda` trades strength for humanness (smaller =
-weaker/more human-like, larger = stronger/more KataGo-like).
+To adjust strength/style, edit the config directly: `humanSLProfile`
+picks the imitated rank (e.g. `preaz_7d`, `rank_5d`), and
+`humanSLChosenMovePiklLambda` trades strength for humanness — **larger =
+weaker/more human-like** (the human policy dominates the final move
+choice), **smaller = stronger/less human-like** (KataGo's own evaluations
+dominate). The stock `gtp_human9d_search_example.cfg` ships `0.08`;
+`gtp_human5k_example.cfg` effectively pins it at infinity (`100000000`)
+to play the raw human policy.
+
+### A 5d–9d ladder
+
+`katago\gtp_human_5d.cfg` through `gtp_human_9d.cfg` are the same config
+five times over, differing *only* in `humanSLProfile`
+(`preaz_5d`…`preaz_9d`) and the matching prose in the header comments.
+Everything that sets the playing character — `maxVisits = 400`,
+`humanSLChosenMovePiklLambda = 1.0`, the temperature and exploration
+settings — is identical across all five, which is the point: the only
+variable between rungs is the imitated rank, so the ladder moves in one
+direction.
+
+The lambda of `1.0` matters here. At the stock `0.08`, KataGo's search
+judgment dominates the move choice so heavily that adjacent dan profiles
+collapse to nearly the same real strength — you can set `preaz_5d` and
+still get beaten like it's 9d. `1.0` lets the rank difference actually
+show through. If a rung still punches above its label, raise lambda on
+that config (try `2.0`) rather than reaching for a lower profile.
+
+Add one engine entry per rung, identical apart from the `-config` path:
+
+```
+"C:\path\to\katago\katago.exe" gtp -model "C:\path\to\katago\models\<net>.bin.gz" -human-model "C:\path\to\LizzieYzy Next\user-data\human-sl-models\b18c384nbt-humanv0.bin.gz" -config "C:\path\to\katago\gtp_human_5d.cfg"
+```
+
+Name the entries by rank in LizzieYzy's engine list so the dropdown reads
+as a ladder; remember each one still has to be started *before* the game
+(see above).
 
 ## The #1 way to make config edits vanish: editing `config.txt` while the app is open
 
@@ -363,3 +395,12 @@ confirm rather than trusting the theory, though — that's the real test.
 
 Keep the `.original-beeps-backup` copy — reverting to stock beeps is just
 copying it back over the modified jar.
+
+**Expect to redo this after every app update.** LizzieYzy Next's updater
+replaces the whole shaded jar, so an upgrade silently restores the stock
+beeps (the giveaway: `app\lizzieyzy-next-installed-manifest.json` and the
+jar share a fresh timestamp, and the ten `assets/sound/<n>.wav` entries
+are back to 10186 bytes each). The spliced jar is not recoverable from
+the `.original-beeps-backup` copy — that's stock by definition — so keep
+the generated `0.wav`–`9.wav` somewhere outside the install and re-run
+just the splicing step against the new jar.
