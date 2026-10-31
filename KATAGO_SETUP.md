@@ -209,13 +209,37 @@ equal visits *and* far cheaper per visit. Measured here on an RTX 5070 at
 | `kata1-tf3-b11c768-s12002M-d6304M` | 70.4M | 1153 |
 | `kata1-zhizi-b40c768nbt-s11272M-d5935M` | 232.5M | 394 |
 
+(Those two rows are the measurements that settled the architecture choice;
+both nets below are the same `b11c768` transformer, so the speed figure
+carries over to whichever one you install.)
+
 Among the older convnets, larger (more blocks/channels) meant stronger but
 slower and more VRAM-hungry; the transformer nets make that tradeoff much
-less painful, and a 12GB card handles `b11c768` comfortably. Pick by
-rating rather than by recency — the newest upload is often provisional,
-rated on zero games. At the time of writing the best-measured were
-`s11003M-d5973M-7gres` (14605 Elo) and `s12002M-d6304M` (14596), both well
-clear of the b40 zhizi nets (~14522).
+less painful, and a 12GB card handles `b11c768` comfortably.
+
+**Pick by rating, not by recency or step count** — neither tracks strength:
+
+| Net | Elo | Games |
+|---|---|---|
+| `kata1-tf3-b11c768-s11003M-d5973M-7gres` | 14606 ± 15 | 5,324 |
+| `kata1-tf3-b11c768-s12002M-d6304M` | 14597 ± 16 | 4,954 |
+| `kata1-tf3-b11c768-s12252M-d6398M` | 14565 ± 16 | 4,852 |
+| `kata1-tf3-b11c768-s12501M-d6467M` | 14548 ± 17 | 4,333 |
+| `kata1-tf3-b11c768-s12752M-d6531M` | 14548 ± 220 | **0** |
+
+`s11003M-d5973M-7gres` is the strongest confidently-rated net and the one
+this repo installs — note it has *fewer* training steps than `s12002M` yet
+outrates it, and that every net uploaded since `s12002M` rates below it.
+So "highest step count" and "newest upload" both pick a weaker net. The
+last row is the trap in its purest form: newest, and rated on zero games,
+hence the ±220.
+
+Because of that, `_NET_ELO` in `src/baduk_lab/cli.py` carries these
+published ratings and baduk-lab picks the highest-rated net present in
+`models/` (unrated nets sort last, so a fresh provisional upload is never
+adopted automatically). Elo is not stored in the `.bin.gz` and can't be
+derived from the filename, so **add a net's rating to that table when you
+add the net**, or it will only ever be used as a last-resort fallback.
 
 ### 3. Get a config file
 

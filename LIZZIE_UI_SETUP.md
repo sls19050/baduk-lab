@@ -57,7 +57,7 @@ Concrete worked example, using the single `katago/` build set up per
 (swap in your own base path and net filename):
 
 ```
-"C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\katago.exe" gtp -model "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\models\kata1-tf3-b11c768-s12002M-d6304M.bin.gz" -config "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\default_gtp.cfg"
+"C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\katago.exe" gtp -model "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\models\kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz" -config "C:\Users\sls19\OneDrive\Documents\local-dev\baduk-lab\katago\default_gtp.cfg"
 ```
 
 Using the plain `.bin` net (if you have both `.bin` and `.bin.gz` sitting

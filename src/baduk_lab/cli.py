@@ -43,6 +43,61 @@ _KATRAIN_MAC_RESOURCES = Path("/Applications/KaTrain.app/Contents/Resources/katr
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOCAL_KATAGO_BUILDS = ["katago"]
 
+# Published Elo ratings from https://katagotraining.org/networks/kata1/, used to
+# pick the strongest net when models/ holds more than one. A rating lives on the
+# training server and is not stored in the .bin.gz, so it cannot be read off the
+# file -- it has to be recorded here and refreshed when a net is added.
+#
+# Deliberately not a step-count or mtime sort: the step number is not a proxy for
+# strength. s11003M-d5973M-7gres (14606) outrates the later s12002M-d6304M
+# (14596), and the four nets uploaded after s12002M all rate below it -- so both
+# "highest steps" and "newest" pick a weaker net here.
+#
+# Only confidently-rated nets belong here. A fresh upload is rated on zero games
+# (the latest can carry +-200 Elo), so an unlisted net sorts last instead of
+# being adopted on a provisional number.
+_NET_ELO = {
+    "kata1-tf3-b11c768-s11003M-d5973M-7gres": 14606.2,
+    "kata1-tf3-b11c768-s12002M-d6304M": 14596.8,
+    "kata1-tf3-b11c768-s12252M-d6398M": 14565.0,
+    "kata1-tf3-b11c768-s12501M-d6467M": 14548.4,
+    "kata1-tf3-b11c768-s11001M-d5973M": 14531.6,
+    "kata1-tf3-b11c768-s12000M-d6278M": 14530.2,
+    "kata1-tf3-b11c768-s11500M-d6163M": 14526.1,
+    "kata1-zhizi-b40c768nbt-s11272M-d5935M": 14523.2,
+    "kata1-tf3-b11c768-s11750M-d6216M": 14518.5,
+    "kata1-zhizi-b40c768nbt-s11472M-d5982M": 14515.9,
+    "kata1-tf3-b11c768-s11341M-d6089M": 14503.6,
+    "kata1-zhizi-b40c768nbt-fdx6d": 14481.6,
+    "kata1-zhizi-b40c768nbt-fdx6c": 14453.6,
+    "kata1-tf3-b10c512-s3203M-d5937M": 14169.6,
+    "kata1-zhizi-b28c512nbt-muonfd2": 14159.0,
+    "kata1-tf2-b10c384-s2941M-d5872M": 13710.3,
+}
+
+
+def _net_name(model: Path) -> str:
+    """Net name as katagotraining.org lists it, i.e. the filename less .bin.gz."""
+    name = model.name
+    for suffix in (".bin.gz", ".txt.gz"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _pick_best_net(models: list[Path]) -> Path:
+    """Pick the net with the highest published Elo, rated nets ahead of unrated."""
+    # Rated nets beat unrated ones; name breaks ties so the choice is stable.
+    best = max(models, key=lambda m: (_net_name(m) in _NET_ELO,
+                                      _NET_ELO.get(_net_name(m), 0.0),
+                                      m.name))
+    if _net_name(best) not in _NET_ELO:
+        logger.warning(
+            "No published Elo on record for any net in %s; falling back to %s. "
+            "Add its rating to _NET_ELO in cli.py to pick by strength.",
+            best.parent, best.name)
+    return best
+
 
 def _find_katrain_katago() -> tuple[Path, Path, Path] | None:
     if not _KATRAIN_MAC_RESOURCES.is_dir():
@@ -52,7 +107,7 @@ def _find_katrain_katago() -> tuple[Path, Path, Path] | None:
     models = sorted((_KATRAIN_MAC_RESOURCES / "models").glob("*.bin.gz"))
     if not (binary.exists() and config.exists() and models):
         return None
-    return binary, models[-1], config
+    return binary, _pick_best_net(models), config
 
 
 def _find_local_katago() -> tuple[Path, Path, Path] | None:
@@ -63,7 +118,7 @@ def _find_local_katago() -> tuple[Path, Path, Path] | None:
     for build_dir in _LOCAL_KATAGO_BUILDS:
         binary = _REPO_ROOT / build_dir / "katago.exe"
         if binary.exists():
-            return binary, models[-1], config
+            return binary, _pick_best_net(models), config
     return None
 
 
