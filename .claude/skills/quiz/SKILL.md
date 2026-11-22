@@ -1,6 +1,6 @@
 ---
 name: quiz
-description: Harvest newly reviewed games and start the baduk-lab quiz. Use when the user wants to drill their mistakes, start/restart the quiz, asks what's due, or says they just reviewed and commented on games in LizzieYzy. Also covers checking what a note resolved to and why.
+description: Harvest newly reviewed games and start the baduk-lab quiz. Use when the user wants to drill their mistakes, start/restart the quiz, asks what's due, or says they just reviewed and commented on games in LizzieYzy. Also covers checking what a note resolved to and why, and auditing comments that may sit on the wrong move.
 ---
 
 # Starting the quiz
@@ -50,6 +50,33 @@ so opening `quiz.html` as a `file://` path silently loses their progress.
 
 Leave `--source note` off if they want both decks. Their own notes are
 offered first either way.
+
+## Comments on the wrong move
+
+`notes` ends with a count of comments that look misplaced when there are
+any. If the user asks about quiz quality, says a comment seems to be on
+the wrong move, or asks for the deck to be checked before drilling:
+
+```bash
+.venv/Scripts/baduk-lab.exe notes --check
+```
+
+It changes nothing -- it reports which file and move to go fix, worst
+first. Relay the list; don't fix the SGFs yourself, since only the user
+knows which move they meant. The verdicts and what each one means are in
+the README under `baduk-lab notes --check`.
+
+Two things that are the harvest's fault rather than theirs, and worth
+checking before blaming a note:
+
+- **LizzieYzy's Flash_Analyze stamps nearly every node.** Its footer is
+  filtered by shape (`(<label> / <n> visits)`), so a new label would flood
+  the deck with hundreds of problems the user never wrote a word about.
+  Suspect this whenever a game harvests far more problems than its
+  neighbours.
+- **The card's answer is KataGo's `order 0`, not its most-visited move.**
+  The two disagree on about one position in seven. If an answer looks
+  absurd, read the `LZ[]` payload before assuming the note is misplaced.
 
 ## Nothing due, or going over a game again
 

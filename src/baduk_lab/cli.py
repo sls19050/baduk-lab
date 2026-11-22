@@ -26,8 +26,8 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (annotations, config, drill, drill_html, metrics, quiz, quiz_html, report,
-               selfplay, strength, strength_chart, tidy)
+from . import (annotations, config, drill, drill_html, metrics, note_check, quiz,
+               quiz_html, report, selfplay, strength, strength_chart, tidy)
 from .engine import GameAnalysis, KataGoClient
 from .loader import GameRecord, load_folder
 
@@ -159,6 +159,12 @@ def main() -> None:
                        help="Your server handle(s), comma-separated. Defaults to "
                             "config.toml's [player] aliases.")
     notes.add_argument("--out", default="report", help="Output directory")
+    notes.add_argument("--check", action="store_true",
+                       help="Report comments that look attached to the wrong "
+                            "move and stop, without touching the deck. A note "
+                            "drifts past the mistake it describes, or stays on "
+                            "the position you were last looking at; this says "
+                            "which ones to go back and move.")
 
     review = sub.add_parser("review", help="Run a quiz session over your problem set")
     review.add_argument("--out", default="report",
@@ -353,6 +359,13 @@ def _run_notes(args: argparse.Namespace) -> None:
     if not folder.is_dir():
         sys.exit(f"Not a folder: {folder}")
 
+    if args.check:
+        examined, issues = note_check.check_folder(folder, player_aliases)
+        if not examined:
+            sys.exit(f"No comments of yours found in {folder}.")
+        print(note_check.format_report(examined, issues))
+        return
+
     mistakes = annotations.harvest_folder(folder, player_aliases)
     if not mistakes:
         sys.exit(f"No commented mistakes found in {folder}. Comments are read from "
@@ -385,6 +398,13 @@ def _run_notes(args: argparse.Namespace) -> None:
                 len(mistakes), len(records), index_path)
     for key in dropped:
         logger.info("Dropped %s -- no note on that move any more.", key)
+
+    # Worth knowing before you drill them: a note on the wrong move makes a
+    # problem whose answer has nothing to do with what you wrote.
+    _, issues = note_check.check_folder(folder, player_aliases)
+    if issues:
+        logger.info("%d comment(s) may be on the wrong move -- run "
+                    "`baduk-lab notes --check` to see which.", len(issues))
     logger.info("Run `baduk-lab review --source note --html --out %s` to drill them.",
                 out_dir)
 

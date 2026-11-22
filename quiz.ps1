@@ -8,6 +8,8 @@
 #   .\quiz.ps1 -Source all     # KataGo's finds too (notes still come first)
 #   .\quiz.ps1 -SkipHarvest    # don't rescan; drill what's already there
 #   .\quiz.ps1 -All           # whole deck, even what isn't due yet
+#   .\quiz.ps1 -Check         # which comments look like they're on the
+#                             # wrong move; report only, serves nothing
 #
 # Ctrl+C stops the server. Your answers are saved as you go.
 
@@ -16,7 +18,8 @@ param(
     [ValidateSet("note", "katago", "all")] [string]$Source = "note",
     [string]$Out = "report",
     [switch]$SkipHarvest,
-    [switch]$All
+    [switch]$All,
+    [switch]$Check
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,6 +32,12 @@ if (-not (Test-Path $exe)) {
 
 Push-Location $repo
 try {
+    if ($Check) {
+        # Report only -- nothing is harvested and no server starts.
+        & $exe notes --check
+        return
+    }
+
     if (-not $SkipHarvest) {
         # Cheap: reads the KataGo analysis already saved in each SGF, so no
         # GPU and no engine start. This is what picks up games you reviewed

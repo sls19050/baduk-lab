@@ -78,7 +78,13 @@ logger = logging.getLogger(__name__)
 _GENERATED_LINE_RES = [
     re.compile(r"^(Black|White) win rate:"),
     re.compile(r"^lead:\s"),
-    re.compile(r"^\(komi\S*\s*/.*visits\)$"),
+    # The visit-count footer, whatever label LizzieYzy puts on it: a full
+    # analysis writes "(komi65 / 2.1k visits)", its one-click Flash_Analyze
+    # pass writes "(Flash_Analyze / 2 visits)". Matching the shape rather
+    # than the label keeps a new label from being mistaken for your text --
+    # Flash_Analyze stamps nearly every node, so a label that slips through
+    # floods the deck with problems you never wrote a word about.
+    re.compile(r"^\([^()/]*/\s*[\d.]+\s*k?\s*visits\)$"),
     re.compile(r"^komi:\s"),
     re.compile(r"^Engine Rules:"),
     re.compile(r"^(Black|White) AI accuracy:"),
@@ -94,6 +100,7 @@ _CANDIDATE_RE = re.compile(
     r"(?:\s+winrate\s+(?P<winrate>-?\d+))?"
     r"(?:\s+prior\s+(?P<prior>-?\d+))?"
     r"(?:\s+scoreMean\s+(?P<score>-?[\d.]+))?"
+    r"(?:\s+order\s+(?P<order>\d+))?"
 )
 
 
@@ -110,7 +117,16 @@ COLUMN_LETTERS = "ABCDEFGHJKLMNOPQRST"
 # as you'd write it ("hane at L13", "the 2nd line M18"). Case-insensitive
 # because notes are typed quickly; bounded by word breaks so "Top 10" and
 # "3rd line" don't register.
-_VERTEX_RE = re.compile(r"\b([A-Ta-t])(\d{1,2})\b")
+#
+# An uppercase point may follow letters directly, because notes are typed
+# fast and "extend to 5th atP13 line" is a coordinate with a missed space,
+# not prose. Requiring a word break there drops the point silently and the
+# card then quizzes some other move. A lowercase one still needs the
+# break, so "komi65" stays prose. Either way a row off the board is
+# dropped below, which is what keeps "KM65" from reading as a point.
+_VERTEX_RE = re.compile(
+    r"(?<![A-Z0-9])(?P<upper>[A-T])(?P<upper_row>\d{1,2})\b"
+    r"|\b(?P<lower>[a-t])(?P<lower_row>\d{1,2})\b")
 
 
 @dataclass
@@ -173,9 +189,10 @@ def vertices_in(text: str, board_size: int) -> list[str]:
     """Every board point named in a note, in the order written, deduped.
     Anything off the board (a stray "the 2 stones at M99") is dropped."""
     out = []
-    for letter, number in _VERTEX_RE.findall(text):
+    for match in _VERTEX_RE.finditer(text):
+        letter = match.group("upper") or match.group("lower")
         column = COLUMN_LETTERS.find(letter.upper())
-        row = int(number)
+        row = int(match.group("upper_row") or match.group("lower_row"))
         if column < 0 or column >= board_size or not 1 <= row <= board_size:
             continue
         vertex = f"{COLUMN_LETTERS[column]}{row}"
@@ -225,17 +242,44 @@ def _parse_eval(payload: str) -> PositionEval:
     winrate_just_moved = _as_float(fields[1]) if len(fields) > 1 else None
     winrate_to_play = None if winrate_just_moved is None else 1.0 - winrate_just_moved / 100.0
 
-    best_move, best_visits = None, -1
-    for match in _CANDIDATE_RE.finditer(candidates):
-        visits = int(match.group("visits") or 0)
-        if visits > best_visits:
-            best_move, best_visits = match.group("move"), visits
+    parsed = [(match.group("move"),
+               int(match.group("visits") or 0),
+               None if match.group("order") is None else int(match.group("order")))
+              for match in _CANDIDATE_RE.finditer(candidates)]
+    best_move = _best_candidate(parsed)
 
     return PositionEval(
         winrate_to_play=winrate_to_play,
         score_to_play=_as_float(fields[3]) if len(fields) > 3 else None,
         best_move=best_move,
     )
+
+
+def _best_candidate(parsed: list[tuple[str, int, int | None]]) -> str | None:
+    """KataGo's own pick from one payload's `(move, visits, order)` list.
+
+    `order 0` is the engine's choice and is not always the move it searched
+    most: it selects on a confidence bound, so a slightly less-visited move
+    with a better score can win. Across this repo's own reviewed games the
+    two disagree on about one position in seven, and where they do, order 0
+    holds the better score three times out of four -- so ranking by raw
+    visits quizzes a move the engine didn't actually recommend.
+
+    Visits stay the fallback for two cases. A payload may carry no `order`
+    at all, and some LizzieYzy versions are reported to write one that
+    accumulates across search passes rather than ranking the current
+    candidates. The second shows up as orders that aren't a clean
+    permutation, which is cheap to check and not worth trusting when it
+    fails -- no payload in this repo's games fails it."""
+    if not parsed:
+        return None
+
+    orders = [order for _, _, order in parsed]
+    ranked = all(order is not None for order in orders) \
+        and sorted(orders) == list(range(len(orders)))
+    if ranked:
+        return min(parsed, key=lambda candidate: candidate[2])[0]
+    return max(parsed, key=lambda candidate: candidate[1])[0]
 
 
 def _as_float(raw: str) -> float | None:
@@ -260,10 +304,58 @@ def _mistake_move_number(node_index: int, node_color: str | None, your_color: st
     return node_index if node_color == your_color else node_index + 1
 
 
-def mistakes_from_sgf(path: Path, player: str | Sequence[str]) -> list[AnnotatedMistake]:
-    """Every commented node in one LizzieYzy-analyzed SGF, resolved to the
-    move it is about. Returns [] if you didn't play in this game, or if
-    nothing in it is commented."""
+@dataclass
+class ResolvedNote:
+    """One comment you wrote, with either the problem it became or the
+    reason it couldn't become one."""
+    node_index: int        # the node the comment sits on
+    move_number: int       # the move it was resolved to
+    note: str
+    mistake: AnnotatedMistake | None = None
+    skipped: str | None = None   # a SKIP_REASONS key when mistake is None
+
+    @property
+    def shadowed(self) -> bool:
+        """Set by resolve_notes on the loser of a move-number collision:
+        two comments resolved to the same move, so only the first is
+        drilled. Shadowing is decided across notes, not per note."""
+        return self.skipped == "shadowed"
+
+
+# Why a comment couldn't be drilled, in words the check command can print.
+SKIP_REASONS = {
+    "past_end": "resolved to a move after the game's last one",
+    "not_your_move": "resolved to a move that isn't yours",
+    "no_analysis": "no KataGo search stored on the position before it",
+    "shadowed": "another comment already resolved to that same move",
+}
+
+
+@dataclass
+class NoteResolution:
+    """Every comment in one game, resolved. `sequence` and `moves` are kept
+    so a caller can look at the position around a note without re-reading
+    the file."""
+    record: GameRecord
+    your_color: str
+    sequence: list
+    moves: list[Move]
+    notes: list[ResolvedNote] = field(default_factory=list)
+
+    @property
+    def mistakes(self) -> list[AnnotatedMistake]:
+        return [n.mistake for n in self.notes if n.mistake is not None]
+
+
+def resolve_notes(path: Path, player: str | Sequence[str]) -> NoteResolution | None:
+    """Every commented node in one LizzieYzy-analyzed SGF, each resolved to
+    the move it is about or marked with why it couldn't be. None if you
+    didn't play in this game.
+
+    `mistakes_from_sgf` is this with only the ones that resolved kept;
+    `note_check` wants the rest too, which is the point of splitting it
+    out -- a checker with its own copy of these rules would drift from the
+    harvester and start validating something nobody drills."""
     game = sgf.Sgf_game.from_bytes(path.read_bytes())
     root = game.get_root()
     sequence = game.get_main_sequence()
@@ -281,9 +373,11 @@ def mistakes_from_sgf(path: Path, player: str | Sequence[str]) -> list[Annotated
         # Expected, not an error: an annotated-games folder usually also
         # holds games you only watched or studied.
         logger.debug("Skipping %s: none of %r found as a player", path.name, player)
-        return []
+        return None
 
-    out = []
+    resolution = NoteResolution(record=record, your_color=your_color,
+                                sequence=sequence, moves=_main_line_moves(sequence))
+
     # The root carries LizzieYzy's whole-game accuracy summary, never a
     # note of yours about a move, so commented nodes start at index 1.
     for index, node in enumerate(sequence):
@@ -294,44 +388,81 @@ def mistakes_from_sgf(path: Path, player: str | Sequence[str]) -> list[Annotated
             continue
 
         move_number = _mistake_move_number(index, node.get_move()[0], your_color)
-        mistake = _build_mistake(record, sequence, move_number, your_color, note)
-        if mistake is not None:
-            out.append(mistake)
+        resolved = ResolvedNote(node_index=index, move_number=move_number, note=note)
+        reason = _skip_reason(record, sequence, move_number, your_color)
+        if reason is None:
+            resolved.mistake = _build_mistake(
+                record, sequence, move_number, your_color, note)
+        else:
+            resolved.skipped = reason
+        resolution.notes.append(resolved)
 
     # A note on your move N and another on your opponent's move N-1 both
     # resolve to N; keep the first and drop the duplicate rather than
     # quizzing the same position twice in one session.
-    seen, deduped = set(), []
-    for mistake in out:
-        if mistake.move_number in seen:
+    seen = set()
+    for resolved in resolution.notes:
+        if resolved.mistake is None:
             continue
-        seen.add(mistake.move_number)
-        deduped.append(mistake)
-    return deduped
+        if resolved.move_number in seen:
+            resolved.mistake = None
+            resolved.skipped = "shadowed"
+            continue
+        seen.add(resolved.move_number)
+    return resolution
 
 
-def _build_mistake(record: GameRecord, sequence, move_number: int, your_color: str,
-                   note: str) -> AnnotatedMistake | None:
-    """Resolve one note into a drillable problem, or None if the file
-    doesn't carry enough to quiz it (the note is about a move that was
-    never played, or LizzieYzy left no search on the position)."""
+def _main_line_moves(sequence) -> list[Move]:
+    """The main line as `Move`s, for replaying the board around a note."""
+    moves = []
+    for number, node in enumerate(sequence[1:], start=1):
+        color, coord = node.get_move()
+        if color is None:
+            continue
+        moves.append(Move(number=number, color=color, coord=coord))
+    return moves
+
+
+def _skip_reason(record: GameRecord, sequence, move_number: int,
+                 your_color: str) -> str | None:
+    """A SKIP_REASONS key if this note can't be drilled, else None. Checked
+    before building so the check command can report the same verdict the
+    harvest reached, instead of only logging it and moving on."""
     if move_number >= len(sequence):
         logger.warning("%s: note about move %d, but the game ends at %d -- skipping",
                        record.path.name, move_number, len(sequence) - 1)
-        return None
+        return "past_end"
 
     color, coord = sequence[move_number].get_move()
     if color != your_color or coord is None:
         logger.warning("%s: note resolved to move %d, which isn't a move of yours "
                        "-- skipping", record.path.name, move_number)
-        return None
+        return "not_your_move"
 
     before = _node_eval(sequence[move_number - 1])
-    after = _node_eval(sequence[move_number])
     if before is None or before.best_move is None:
         logger.warning("%s: no KataGo analysis stored before move %d -- skipping",
                        record.path.name, move_number)
-        return None
+        return "no_analysis"
+    return None
+
+
+def mistakes_from_sgf(path: Path, player: str | Sequence[str]) -> list[AnnotatedMistake]:
+    """Every commented node in one LizzieYzy-analyzed SGF, resolved to the
+    move it is about. Returns [] if you didn't play in this game, or if
+    nothing in it is commented."""
+    resolution = resolve_notes(path, player)
+    return [] if resolution is None else resolution.mistakes
+
+
+def _build_mistake(record: GameRecord, sequence, move_number: int, your_color: str,
+                   note: str) -> AnnotatedMistake:
+    """Resolve one note into a drillable problem. Call only on a note
+    `_skip_reason` passed -- the move, its colour and the search on the
+    position before it are all assumed to be there."""
+    _, coord = sequence[move_number].get_move()
+    before = _node_eval(sequence[move_number - 1])
+    after = _node_eval(sequence[move_number])
 
     note_vertices = vertices_in(note, record.board_size)
     best, alternatives = _choose_best(
@@ -375,13 +506,7 @@ def moves_of(path: Path) -> tuple[int, list[Move]]:
     report.export_game_records/board.board_before want, so the quiz can
     redraw the position without re-reading this file."""
     game = sgf.Sgf_game.from_bytes(path.read_bytes())
-    moves = []
-    for number, node in enumerate(game.get_main_sequence()[1:], start=1):
-        color, coord = node.get_move()
-        if color is None:
-            continue
-        moves.append(Move(number=number, color=color, coord=coord))
-    return game.get_size(), moves
+    return game.get_size(), _main_line_moves(game.get_main_sequence())
 
 
 def harvest_folder(folder: Path, player: str | Sequence[str]) -> list[AnnotatedMistake]:

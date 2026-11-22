@@ -61,6 +61,29 @@ def test_user_note_is_empty_when_you_wrote_nothing():
     assert annotations.user_note(_engine_comment()) == ""
 
 
+def test_vertices_in_reads_a_point_typed_against_the_previous_word():
+    """Notes are typed fast. "atP13" is a coordinate with a missed space,
+    and dropping it silently makes the card quiz a different move than the
+    note recommends."""
+    assert annotations.vertices_in("extend to 5th atP13 line", 19) == ["P13"]
+
+
+def test_vertices_in_still_ignores_prose_and_generated_numbers():
+    assert annotations.vertices_in("Top 10 moves, 3rd line", 19) == []
+    assert annotations.vertices_in("komi65 is the komi", 19) == []
+    # Off the board, so a header's "KM65" can't read as a point.
+    assert annotations.vertices_in("KM65 SZ19", 19) == []
+
+
+def test_user_note_is_empty_for_a_flash_analyze_stamp():
+    """LizzieYzy's one-click pass stamps "(Flash_Analyze / 2 visits)" onto
+    nearly every node. It is its footer, not a note of yours, so a node
+    carrying only that must not become a problem."""
+    assert annotations.user_note("(Flash_Analyze / 2 visits)") == ""
+    assert annotations.user_note(
+        "(Flash_Analyze / 2 visits)\nN8 is heavy.") == "N8 is heavy."
+
+
 def test_user_note_keeps_a_blank_line_inside_your_own_text():
     note = annotations.user_note(_engine_comment("First point.\n\nSecond point."))
 
@@ -207,9 +230,11 @@ def test_note_with_no_stored_analysis_before_it_is_skipped(tmp_path):
 
 # --- reading the answer and the cost out of LZ[] ----------------------
 
-def test_best_move_is_the_highest_visit_candidate_not_the_first(tmp_path):
-    """LizzieYzy's `order` field is not a visit ranking -- it accumulates
-    across search passes -- so the candidate list is not pre-sorted."""
+def test_best_move_follows_katagos_order_not_the_visit_count(tmp_path):
+    """`order 0` is the engine's own pick. It selects on a confidence
+    bound, so the move it searched most is not always the one it
+    recommends -- and when they disagree, order 0 is the one holding the
+    better score."""
     candidates = ("move R5 visits 756 winrate 4825 scoreMean -0.13 order 0 "
                   "info move O7 visits 2588 winrate 4802 scoreMean -0.18 order 1")
     path = _write_sgf(tmp_path, [
@@ -219,7 +244,26 @@ def test_best_move_is_the_highest_visit_candidate_not_the_first(tmp_path):
                    comment=_engine_comment("Wrong point.")),
     ])
 
-    assert annotations.mistakes_from_sgf(path, PLAYER)[0].best == "O7"
+    assert annotations.mistakes_from_sgf(path, PLAYER)[0].best == "R5"
+
+
+def test_best_move_falls_back_to_visits_without_a_usable_order(tmp_path):
+    """A payload with no `order`, or one that isn't a clean ranking (some
+    LizzieYzy versions write a counter that accumulates across search
+    passes), is ranked by visits instead."""
+    no_order = ("move R5 visits 756 winrate 4825 scoreMean -0.13 "
+                "info move O7 visits 2588 winrate 4802 scoreMean -0.18")
+    repeated = ("move R5 visits 756 winrate 4825 scoreMean -0.13 order 0 "
+                "info move O7 visits 2588 winrate 4802 scoreMean -0.18 order 0")
+    for candidates in (no_order, repeated):
+        path = _write_sgf(tmp_path, [
+            _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+            _move_node("W", "bb", lz=_lz(50.0, 2.0, candidates)),
+            _move_node("B", "cc", lz=_lz(40.0, 1.0, "move D4 visits 900 scoreMean 1.0"),
+                       comment=_engine_comment("Wrong point.")),
+        ], name=f"{hash(candidates)}.sgf")
+
+        assert annotations.mistakes_from_sgf(path, PLAYER)[0].best == "O7"
 
 
 def test_points_lost_flips_the_opponents_perspective_back(tmp_path):

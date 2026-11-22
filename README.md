@@ -324,6 +324,7 @@ you commented on into a quiz problem:
 ```bash
 baduk-lab notes                          # uses config.toml's [annotations] folder
 baduk-lab notes "path\to\AnalyzedGames"  # or point it somewhere explicitly
+baduk-lab notes --check                  # which comments look misplaced (below)
 baduk-lab review --source note --html    # drill just those
 ```
 
@@ -369,6 +370,43 @@ A few details worth knowing:
   to the deck without resetting your review progress. The two decks are
   kept in separate files (`problems/notes_index.json` vs `index.json`), so
   neither command can clobber the other's work.
+
+### Comments on the wrong move: `baduk-lab notes --check`
+
+You comment from wherever the board happens to be, so a note doesn't
+always land on the move it is about -- it drifts a move or two past the
+mistake, or stays on the position you were last looking at. Nothing can
+tell from the file alone, so the harvest resolves it to *a* move anyway
+and a drifted note quietly becomes a problem whose answer has nothing to
+do with what you wrote.
+
+```bash
+baduk-lab notes --check    # report only; changes nothing
+```
+
+It reads the same resolution the harvest reached and grades how well each
+note fits the move it landed on, worst first, with the file and move to go
+fix. A plain `notes` run ends with a one-line count pointing here, so you
+find out before you drill them.
+
+The signal that outranks everything else is whether the note *names* the
+move the card would be graded against. When it does, the note is provably
+about that position and no other evidence can outweigh it -- a costlier
+mistake a few moves away is then a second mistake you didn't comment on,
+not a sign the note is misplaced. Judging notes without that check flags
+about half of them and is worth nothing. What it reports:
+
+| Verdict | What it means |
+| --- | --- |
+| `misplaced` (high) | Names a point that is nothing in this position, cost almost nothing, and sits beside a much worse move of yours -- the note probably belongs to that one. |
+| `drifted` (medium) | Names no point, cost almost nothing, and a much worse move is a few moves away. |
+| `answer_disagrees` (medium) | Recommends a point the card won't accept, so the quiz would mark your own recommendation wrong. Either the note is on the wrong move, or play your line out in LizzieYzy so it is saved as a variation and becomes the answer. |
+| `no_wrong_answer` (low) | Sits on a move KataGo already rates best, so the card's answer is the move you played -- usually a note about something you got right. |
+| `names_only_occupied` (low) | Names only points already on the board, which is often a retrospective note about an earlier move. |
+
+It also surfaces the notes the harvest dropped outright -- one resolved
+past the game's last move, or shadowed because another comment already
+claimed that move -- which otherwise only appear as a log line.
 
 ## Reviewing your problem set
 
