@@ -22,3 +22,7 @@ analysis_logs/
 # Engine logs
 gtp_logs/
 *.log
+
+# Claude Code session runtime state (the skills under .claude/skills are tracked)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

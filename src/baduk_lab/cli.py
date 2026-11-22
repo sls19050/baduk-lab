@@ -173,6 +173,13 @@ def main() -> None:
                              "(note), or both (default). Your own notes are "
                              "offered first when both are due, since you picked "
                              "them out by hand.")
+    review.add_argument("--ignore-due", action="store_true",
+                        help="Drill every problem in the deck, not just what "
+                             "spaced repetition says is due today -- for going "
+                             "back over a game you just reviewed, or when "
+                             "nothing is due and you want to practise anyway. "
+                             "Answers still count: a right one pushes the "
+                             "problem to a later box as usual.")
     review.add_argument("--html", action="store_true",
                         help="Generate quiz.html and open it in your browser via a "
                              "local server, instead of the terminal y/n loop -- "
@@ -571,6 +578,19 @@ def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path
             _kill_process_tree(_QuizRequestHandler.lizzieyzy_proc.pid)
 
 
+def _select_problems(problems, state: dict, today: date, *,
+                     ignore_due: bool):
+    """The problems this session will ask, best-first.
+
+    Normally that is whatever spaced repetition says is due. --ignore-due
+    takes the whole deck instead, keeping due_problems' own worst-first
+    order (by points lost) so a practice run still leads with the costly
+    mistakes rather than with whatever sorts first by name."""
+    selected = (sorted(problems, key=lambda p: p.points_lost, reverse=True)
+                if ignore_due else quiz.due_problems(state, problems, today))
+    return _order_session(selected)
+
+
 def _order_session(due: list[report.ProblemIndexEntry]) -> list[report.ProblemIndexEntry]:
     """Put your own commented mistakes first, keeping each deck in the
     worst-first order `quiz.due_problems` already gave them.
@@ -607,12 +627,14 @@ def _run_review(args: argparse.Namespace) -> None:
     today = date.today()
     quiz.sync_new_problems(state, problems, today)
 
-    due = _order_session(quiz.due_problems(state, problems, today))[: args.limit]
+    due = _select_problems(problems, state, today,
+                           ignore_due=args.ignore_due)[: args.limit]
     quiz.save_state(state_path, state)
 
     if args.html:
         if not due:
-            print("Nothing due for review right now. Nice.")
+            print("Nothing due for review right now. Nice. "
+                  "(`--ignore-due` drills the whole deck anyway.)")
             return
         games = report.load_game_records(problems_dir)
         if not games:
@@ -625,7 +647,8 @@ def _run_review(args: argparse.Namespace) -> None:
         return
 
     if not due:
-        print("Nothing due for review right now. Nice.")
+        print("Nothing due for review right now. Nice. "
+              "(`--ignore-due` drills the whole deck anyway.)")
         return
 
     print(f"{len(due)} problem(s) due for review.\n")

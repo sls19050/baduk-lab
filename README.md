@@ -16,6 +16,25 @@ with `baduk-lab review` -- both the ones KataGo flags and, via
 [`baduk-lab notes`](#drilling-your-own-review-notes-baduk-lab-notes), the
 ones you diagnosed yourself while reviewing a game.
 
+## Just the quiz: `quiz.ps1`
+
+If all you want is to drill the mistakes you commented on, skip the venv
+dance -- this script activates nothing, finds its own repo, harvests any
+games you have reviewed since last time, and serves the quiz:
+
+```powershell
+.\quiz.ps1                 # your own review notes, 20 problems
+.\quiz.ps1 -Limit 5        # a short session
+.\quiz.ps1 -All            # the whole deck, even what isn't due yet
+.\quiz.ps1 -Source all     # KataGo's finds too (your notes still come first)
+.\quiz.ps1 -SkipHarvest    # don't rescan; drill what's already there
+```
+
+Adding games needs nothing but a re-run: review in LizzieYzy Next, save to
+your `AnalyzedGames` folder, run `quiz.ps1`. Progress on problems you have
+already drilled survives, and a comment you move to a different move takes
+its old quiz entry with it.
+
 ## Quick start (already-set-up machine)
 
 Once KataGo, `config.toml` (your player aliases + games folder), and the
@@ -36,6 +55,7 @@ Then, day-to-day:
 baduk-lab analyze                 # re-scans your Gibo folder, only pays for new games
 baduk-lab notes                   # harvests games you reviewed and commented on (no GPU)
 baduk-lab review --out report --html --phase middle --limit 15
+baduk-lab review --source note --html --ignore-due   # whole deck, due or not
 ```
 
 The `analyze` run writes `report/report.md` (the diagnosis) and updates

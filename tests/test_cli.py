@@ -1,4 +1,7 @@
-from baduk_lab.cli import _order_session, _resolve_problem_sgf_path
+from datetime import date
+
+from baduk_lab.cli import (_order_session, _resolve_problem_sgf_path,
+                           _select_problems)
 from baduk_lab.report import ProblemIndexEntry
 
 
@@ -60,3 +63,36 @@ def test_ordering_a_single_deck_changes_nothing(tmp_path):
     due = [_entry("n1", "note", 0.8), _entry("n2", "note", 0.2)]
 
     assert [p.problem_id for p in _order_session(due)] == ["n1", "n2"]
+
+
+TODAY = date(2026, 11, 21)
+
+
+def test_select_problems_normally_asks_only_what_is_due():
+    deck = [_entry("note::a::m1", "note", 1.0), _entry("note::b::m2", "note", 9.0)]
+    state = {"note::a::m1": {"next_due": "2026-11-21"},
+             "note::b::m2": {"next_due": "2026-12-05"}}
+
+    picked = _select_problems(deck, state, TODAY, ignore_due=False)
+
+    assert [p.problem_id for p in picked] == ["note::a::m1"]
+
+
+def test_select_problems_ignore_due_takes_the_whole_deck_worst_first():
+    """For practising a game you just reviewed, or when nothing is due."""
+    deck = [_entry("note::a::m1", "note", 1.0), _entry("note::b::m2", "note", 9.0)]
+    state = {"note::a::m1": {"next_due": "2026-12-05"},
+             "note::b::m2": {"next_due": "2026-12-05"}}
+
+    picked = _select_problems(deck, state, TODAY, ignore_due=True)
+
+    assert [p.problem_id for p in picked] == ["note::b::m2", "note::a::m1"]
+
+
+def test_select_problems_ignore_due_still_puts_your_own_notes_first():
+    deck = [_entry("katago::a::m1", "katago", 50.0),
+            _entry("note::b::m2", "note", 0.5)]
+
+    picked = _select_problems(deck, {}, TODAY, ignore_due=True)
+
+    assert [p.source for p in picked] == ["note", "katago"]
