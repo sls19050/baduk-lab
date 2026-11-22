@@ -33,6 +33,14 @@ def default_folder() -> Path | None:
     return Path(folder) if folder else None
 
 
+def annotations_folder() -> Path | None:
+    """Folder of SGFs you've reviewed and commented on, scanned by
+    `baduk-lab notes`. For LizzieYzy Next this is its own
+    `user-data/AnalyzedGames/`, which is where it saves analyzed games."""
+    folder = _load().get("annotations", {}).get("folder")
+    return Path(folder) if folder else None
+
+
 def lizzieyzy_exe() -> Path | None:
     """LizzieYzy Next executable, used by quiz.html's "deep analysis" button
     (review --html) to open a problem position for live/continuous

@@ -28,6 +28,29 @@ def test_sync_new_problems_adds_unseen_due_today_and_leaves_existing_alone():
                               "first_seen": "2026-01-01", "times_seen": 0}
 
 
+def test_drop_missing_forgets_moved_notes_but_spares_the_other_decks():
+    state = {
+        "note::g::m47": {"box": 1, "next_due": "2026-01-01"},
+        "note::g::m97": {"box": 2, "next_due": "2026-01-05"},  # note moved away
+        "katago::g::m12": {"box": 3, "next_due": "2026-01-09"},  # other deck
+    }
+    problems = [_P("note::g::m47", 1.2)]
+
+    dropped = quiz.drop_missing(state, problems, prefix="note::")
+
+    assert dropped == ["note::g::m97"]
+    assert set(state) == {"note::g::m47", "katago::g::m12"}
+    # the surviving note keeps its progress
+    assert state["note::g::m47"]["box"] == 1
+
+
+def test_drop_missing_keeps_everything_when_nothing_moved():
+    state = {"note::g::m47": {"box": 2, "next_due": "2026-01-05"}}
+
+    assert quiz.drop_missing(state, [_P("note::g::m47", 1.2)], prefix="note::") == []
+    assert state["note::g::m47"]["box"] == 2
+
+
 def test_due_problems_filters_by_next_due_and_sorts_worst_first():
     state = {
         "a::m1": {"box": 1, "next_due": "2026-01-01"},

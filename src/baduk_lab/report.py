@@ -9,20 +9,29 @@ Report structure:
   Each problem SGF contains the position before your mistake, with your
   actual move and KataGo's preferred move stored as comments/variations
   so the answer is one click away but not spoiled.
+
+This module also owns the on-disk form of both quiz decks: the `analyze`
+deck (index.json + games.json, KataGo's points-lost threshold) and the
+`notes` deck (notes_index.json + notes_games.json, the mistakes you
+commented on yourself -- see annotations.py). They share the
+ProblemIndexEntry shape and the per-problem SGF layout, so `review` can
+shuffle both into one session.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sgfmill import sgf as sgf_lib
 from sgfmill.common import move_from_vertex
 
 from . import metrics, strength
+from .annotations import AnnotatedMistake
 from .engine import GameAnalysis
+from .loader import GameRecord
 from .strength import GameStrengthEstimate, SideEstimate
 
 
@@ -213,60 +222,73 @@ def _problem_relpath(problem: metrics.ProblemPosition) -> str:
     return f"{phase}/{stem}_m{problem.move_number:03d}.sgf"
 
 
+def _write_position_sgf(record: GameRecord, *, move_number: int, played: str, best: str,
+                        header: str, played_comment: str, path: Path,
+                        best_comment: str = "KataGo's preferred move.") -> None:
+    """One problem SGF: the main line stops right before the mistake (so
+    your move is hidden), and what you played plus the better move hang off
+    it as two sibling variations -- one click away but not spoiled on open.
+    Shared by both decks, which differ only in their wording."""
+    mover = "b" if move_number % 2 == 1 else "w"
+    game = sgf_lib.Sgf_game(size=record.board_size)
+    root = game.get_root()
+    root.set("KM", record.komi)
+    root.set("PB", record.player_black)
+    root.set("PW", record.player_white)
+    root.set("C", header)
+
+    node = root
+    for move in record.moves[: move_number - 1]:
+        node = node.new_child()
+        node.set_move(move.color, move.coord)
+
+    played_node = node.new_child()
+    played_node.set_move(mover, move_from_vertex(played, record.board_size))
+    played_node.set("C", played_comment)
+
+    best_node = node.new_child()
+    best_node.set_move(mover, move_from_vertex(best, record.board_size))
+    best_node.set("C", best_comment)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(game.serialise())
+
+
 def export_problem_sgfs(problems: list[metrics.ProblemPosition], out_dir: Path,
                         analyses: list[GameAnalysis]) -> None:
     """Export each problem position as its own SGF, grouped into
-    opening/middle/endgame subfolders. The main line stops right before the
-    mistake (so your move is hidden); what you played and KataGo's preferred
-    move are stored as two sibling variations, one click away but not
-    spoiled on open."""
+    opening/middle/endgame subfolders."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    by_game = {a.record.path.name: a for a in analyses}
+    by_game = {a.record.path.name: a.record for a in analyses}
 
     for problem in problems:
-        analysis = by_game.get(problem.game)
-        if analysis is None:
+        record = by_game.get(problem.game)
+        if record is None:
             continue
-        record = analysis.record
-        prefix = record.moves[: problem.move_number - 1]
         mover = "b" if problem.move_number % 2 == 1 else "w"
-
-        game = sgf_lib.Sgf_game(size=record.board_size)
-        root = game.get_root()
-        root.set("KM", record.komi)
-        root.set("PB", record.player_black)
-        root.set("PW", record.player_white)
-        root.set("C",
-            f"From {problem.game}, move {problem.move_number}. "
-            f"{'Black' if mover == 'b' else 'White'} to play. "
-            f"{problem.points_lost:.1f} points were lost here.")
-
-        node = root
-        for move in prefix:
-            node = node.new_child()
-            node.set_move(move.color, move.coord)
-
-        played = node.new_child()
-        played.set_move(mover, move_from_vertex(problem.played, record.board_size))
-        played.set("C", f"What was actually played ({problem.points_lost:.1f} points lost).")
-
-        best = node.new_child()
-        best.set_move(mover, move_from_vertex(problem.best, record.board_size))
-        best.set("C", "KataGo's preferred move.")
-
-        path = out_dir / _problem_relpath(problem)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(game.serialise())
+        _write_position_sgf(
+            record, move_number=problem.move_number, played=problem.played,
+            best=problem.best,
+            header=(f"From {problem.game}, move {problem.move_number}. "
+                    f"{'Black' if mover == 'b' else 'White'} to play. "
+                    f"{problem.points_lost:.1f} points were lost here."),
+            played_comment=f"What was actually played ({problem.points_lost:.1f} points lost).",
+            path=out_dir / _problem_relpath(problem),
+        )
 
 
 @dataclass
 class ProblemIndexEntry:
-    """Machine-readable mirror of one ProblemPosition, as written to
-    problems/index.json. `quiz.py`'s review-scheduling functions accept
+    """Machine-readable mirror of one problem, as written to
+    problems/index.json (the `analyze` deck) or problems/notes_index.json
+    (the `notes` deck). `quiz.py`'s review-scheduling functions accept
     either this or a metrics.ProblemPosition -- both expose the
     `problem_id`/`points_lost` attributes they need. `played`/`best` (SGF
     vertex strings, e.g. "Q16") are what quiz_html.py needs to grade a
-    click and mark the board without re-running KataGo."""
+    click and mark the board without re-running KataGo.
+
+    `source`/`note`/`winrate_drop` default to the `analyze` deck's values
+    so an index.json written before the notes deck existed still loads."""
     problem_id: str
     game: str
     move_number: int
@@ -275,6 +297,14 @@ class ProblemIndexEntry:
     path: str
     played: str
     best: str
+    source: str = "katago"      # "katago" (points-lost threshold) or "note" (your own comment)
+    note: str = ""              # your own comment text, for "note" problems
+    winrate_drop: float = 0.0   # 0-1; what a close game's points_lost misses
+    # Other moves that also count as right, and the points your note names
+    # (marked on the board, but never graded as right -- a note names the
+    # move you played as often as the one you should have).
+    alternatives: list[str] = field(default_factory=list)
+    note_vertices: list[str] = field(default_factory=list)
 
 
 def export_problem_index(problems: list[metrics.ProblemPosition], out_dir: Path) -> Path:
@@ -296,8 +326,101 @@ def export_problem_index(problems: list[metrics.ProblemPosition], out_dir: Path)
 
 def load_problem_index(out_dir: Path) -> list[ProblemIndexEntry]:
     """Read back problems/index.json written by export_problem_index."""
-    data = json.loads((out_dir / "index.json").read_text(encoding="utf-8"))
+    return _load_index(out_dir / "index.json")
+
+
+# The notes deck is kept in its own files rather than merged into
+# index.json/games.json, because `analyze` rewrites those two wholesale on
+# every run -- a shared file would mean whichever command ran last silently
+# erased the other's deck. `review` reads both and merges them in memory.
+NOTES_INDEX_FILENAME = "notes_index.json"
+NOTES_GAMES_FILENAME = "notes_games.json"
+
+
+def _note_relpath(mistake: AnnotatedMistake) -> str:
+    """Stable path under problems/notes/, flat rather than phase-grouped:
+    these problems are picked by you, not by which third of the game they
+    fall in, so there is nothing to group by."""
+    return f"notes/{Path(mistake.game).stem}_m{mistake.move_number:03d}.sgf"
+
+
+def export_note_sgfs(mistakes: list[AnnotatedMistake], out_dir: Path,
+                     records: dict[str, GameRecord]) -> None:
+    """Same per-problem SGF as the `analyze` deck, but captioned with your
+    own note, so the quiz's "deep analysis in LizzieYzy" button opens the
+    position with your diagnosis already attached to it."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for mistake in mistakes:
+        record = records.get(mistake.game)
+        if record is None:
+            continue
+        _write_position_sgf(
+            record, move_number=mistake.move_number, played=mistake.played,
+            best=mistake.best,
+            header=(f"From {mistake.game}, move {mistake.move_number}. "
+                    f"{'Black' if mistake.color == 'b' else 'White'} to play.\n\n"
+                    f"Your note: {mistake.note}"),
+            played_comment=(f"What you actually played "
+                            f"({mistake.points_lost:.1f} points, "
+                            f"{mistake.winrate_drop:.0%} winrate lost)."),
+            best_comment=("The move your note names, which you played out "
+                          "yourself while reviewing."
+                          if mistake.best in mistake.note_vertices
+                          else "KataGo's preferred move."),
+            path=out_dir / _note_relpath(mistake),
+        )
+    _prune_note_sgfs(mistakes, out_dir)
+
+
+def _prune_note_sgfs(mistakes: list[AnnotatedMistake], out_dir: Path) -> list[Path]:
+    """Delete per-problem SGFs left over from a note the user has since moved
+    or deleted, and return them. The index is rewritten wholesale on every
+    harvest, so these files are already unreachable from the quiz; removing
+    them keeps `problems/notes/` an honest picture of the deck."""
+    live = {(out_dir / _note_relpath(m)).name for m in mistakes}
+    stale = sorted(p for p in (out_dir / "notes").glob("*.sgf")
+                   if p.name not in live)
+    for path in stale:
+        path.unlink()
+    return stale
+
+
+def export_note_index(mistakes: list[AnnotatedMistake], out_dir: Path) -> Path:
+    """Write problems/notes_index.json, in the same ProblemIndexEntry shape
+    the `analyze` deck uses, so `review` can treat both decks alike."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    entries = [
+        ProblemIndexEntry(
+            problem_id=m.problem_id, game=m.game, move_number=m.move_number,
+            phase=metrics.phase_of(m.move_number), points_lost=m.points_lost,
+            path=_note_relpath(m), played=m.played, best=m.best,
+            source="note", note=m.note, winrate_drop=m.winrate_drop,
+            alternatives=m.alternatives, note_vertices=m.note_vertices,
+        )
+        for m in mistakes
+    ]
+    path = out_dir / NOTES_INDEX_FILENAME
+    path.write_text(json.dumps([asdict(e) for e in entries], indent=2), encoding="utf-8")
+    return path
+
+
+def load_note_index(out_dir: Path) -> list[ProblemIndexEntry]:
+    """Read back problems/notes_index.json, or [] if `notes` never ran."""
+    return _load_index(out_dir / NOTES_INDEX_FILENAME, missing_ok=True)
+
+
+def _load_index(path: Path, missing_ok: bool = False) -> list[ProblemIndexEntry]:
+    if missing_ok and not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
     return [ProblemIndexEntry(**entry) for entry in data]
+
+
+def export_note_game_records(records: dict[str, GameRecord], out_dir: Path) -> Path:
+    """The notes deck's own games.json (see NOTES_GAMES_FILENAME)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return _write_games_json([r for r in records.values()],
+                             out_dir / NOTES_GAMES_FILENAME)
 
 
 def export_game_records(analyses: list[GameAnalysis], out_dir: Path) -> Path:
@@ -306,14 +429,29 @@ def export_game_records(analyses: list[GameAnalysis], out_dir: Path) -> Path:
     what quiz_html.py uses to reconstruct any problem's pre-mistake board
     (via board.board_before) without re-parsing the original SGF/.gib
     source folder, which `review` has no reason to touch."""
+    return _write_games_json([a.record for a in analyses], out_dir / "games.json")
+
+
+def _write_games_json(records: list[GameRecord], path: Path) -> Path:
     games = {
-        analysis.record.path.name: {
-            "board_size": analysis.record.board_size,
+        record.path.name: {
+            "board_size": record.board_size,
             "moves": [[m.color, list(m.coord) if m.coord else None]
-                     for m in analysis.record.moves],
+                     for m in record.moves],
         }
-        for analysis in analyses
+        for record in records
     }
-    path = out_dir / "games.json"
     path.write_text(json.dumps(games), encoding="utf-8")
     return path
+
+
+def load_game_records(out_dir: Path) -> dict:
+    """Both decks' game records, merged. Either file may be missing (one
+    of `analyze`/`notes` hasn't run yet); a game present in both is the
+    same record either way, so the collision doesn't matter."""
+    games = {}
+    for filename in ("games.json", NOTES_GAMES_FILENAME):
+        path = out_dir / filename
+        if path.exists():
+            games.update(json.loads(path.read_text(encoding="utf-8")))
+    return games

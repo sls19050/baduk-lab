@@ -7,6 +7,13 @@ each problem's pre-mistake board (via board.board_before) plus the played/
 best vertices into one embedded JSON blob, and ships a hand-rolled inline
 SVG board renderer -- no external libraries, no CDN, works offline.
 
+Problems from both decks render the same way. A `notes` problem (one you
+commented on yourself) additionally shows your own note on reveal, is
+labelled by winrate lost rather than points when those disagree, and
+offers a "count it anyway" override -- grading compares the click to
+KataGo's single top move, but a note usually describes a plan, and the
+move you had in mind may be just as good.
+
 Grading is client-side and immediate: click an empty intersection, it's
 compared to the recorded "best" vertex. Each graded answer is then POSTed
 to /quiz-state on the local server this page is served from, which calls
@@ -27,6 +34,16 @@ from sgfmill.common import move_from_vertex
 
 from . import board
 from .report import ProblemIndexEntry
+
+
+def _coords(vertices: list[str], board_size: int) -> list[list[int]]:
+    """SGF vertex strings to [row, col] pairs, dropping passes."""
+    out = []
+    for vertex in vertices:
+        coord = move_from_vertex(vertex, board_size)
+        if coord is not None:
+            out.append(list(coord))
+    return out
 
 
 def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
@@ -54,6 +71,11 @@ def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
             "played": list(played_coord) if played_coord else None,
             "best": list(best_coord) if best_coord else None,
             "path": p.path,
+            "source": p.source,
+            "note": p.note,
+            "winrateDrop": round(p.winrate_drop, 3),
+            "alternatives": _coords(p.alternatives, board_size),
+            "noteVertices": _coords(p.note_vertices, board_size),
         })
 
     payload = json.dumps(problems).replace("</", "<\\/")
@@ -106,12 +128,28 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .status.wrong { color: #a53f3f; }
   .actions { margin-top: 10px; display: flex; gap: 8px; }
   .lizzie-status { font-size: 12px; color: #6b6156; margin-top: 6px; min-height: 16px; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; padding: 1px 6px; border-radius: 4px; margin-right: 6px;
+    background: #e8e0d0; color: #6b6156;
+  }
+  .tag.note { background: #dfe7f3; color: #2c4a76; }
+  .note-box {
+    margin-top: 10px; padding: 10px 12px; border-left: 3px solid #2c4a76;
+    background: #f2f6fc; border-radius: 0 6px 6px 0; white-space: pre-wrap;
+  }
+  .note-box .label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: #2c4a76; display: block; margin-bottom: 4px;
+  }
   #done { max-width: 620px; text-align: center; }
   #done h2 { margin-bottom: 4px; }
   .legend { font-size: 12px; color: #6b6156; margin-top: 10px; }
   .legend span { padding: 1px 6px; border-radius: 4px; margin-right: 4px; }
   .swatch-best { background: #cdead4; color: #1f4d2a; }
   .swatch-played { background: #f6d9c9; color: #7a3f1f; }
+  .swatch-alt { background: #e4f0e7; color: #2f6b3a; }
+  .swatch-note { background: #dfe7f3; color: #2c4a76; }
 </style>
 </head>
 <body>
@@ -130,15 +168,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="info">
     <div class="meta" id="meta">-</div>
     <div class="status" id="status">Click a point on the board to guess.</div>
+    <div class="note-box" id="noteBox" hidden><span class="label">Your note</span><span id="noteText"></span></div>
     <div class="actions">
       <button id="lizzieBtn">Deep analysis in LizzieYzy</button>
       <button id="skipBtn">Skip (show answer)</button>
+      <button id="overrideBtn" hidden>My move was fine &mdash; count it</button>
       <button id="nextBtn" class="primary" disabled>Next &rarr;</button>
     </div>
     <div id="lizzieStatus" class="lizzie-status"></div>
     <div class="legend">
-      <span class="swatch-best">B</span>KataGo's move
-      <span class="swatch-played">P</span>what you actually played (if different)
+      <span class="swatch-best">B</span>the answer
+      <span class="swatch-alt">=</span>also counts as right
+      <span class="swatch-played">P</span>what you actually played
+      <span class="swatch-note">N</span>other points your note names
     </div>
   </div>
 </div>
@@ -151,7 +193,12 @@ _TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const DATA = __QUIZ_DATA__;
-const CELL = 30, MARGIN = 26;
+// MARGIN has to clear the coordinate labels drawn outside the grid, since
+// the SVG is sized to exactly MARGIN*2 + the grid and anything past that
+// is clipped.
+const CELL = 30, MARGIN = 30;
+// Go skips I, so a column's letter is not its index's letter.
+const COLUMN_LETTERS = 'ABCDEFGHJKLMNOPQRST';
 
 let idx = 0, correctCount = 0, answeredCount = 0, answered = false;
 
@@ -161,6 +208,9 @@ const statusEl = document.getElementById('status');
 const scoreEl = document.getElementById('score');
 const nextBtn = document.getElementById('nextBtn');
 const skipBtn = document.getElementById('skipBtn');
+const overrideBtn = document.getElementById('overrideBtn');
+const noteBox = document.getElementById('noteBox');
+const noteText = document.getElementById('noteText');
 const saveStatusEl = document.getElementById('saveStatus');
 const lizzieBtn = document.getElementById('lizzieBtn');
 const lizzieStatusEl = document.getElementById('lizzieStatus');
@@ -173,6 +223,33 @@ function svgEl(tag, attrs) {
 
 function toXY(row, col, size) {
   return [MARGIN + col * CELL, MARGIN + (size - 1 - row) * CELL];
+}
+
+function label(x, y, text, anchor) {
+  const el = svgEl('text', {
+    x, y, 'text-anchor': anchor, 'font-size': 11, fill: '#6b5836',
+    'font-family': 'inherit',
+  });
+  el.textContent = text;
+  svg.appendChild(el);
+}
+
+// Both edges, not just one: your own notes name points all over the board
+// ("hane at L13", "extend to R6"), and counting in from the far side of a
+// 19x19 grid is exactly the friction this is here to remove.
+function drawCoordinates(size) {
+  const far = MARGIN + (size - 1) * CELL;
+  for (let col = 0; col < size; col++) {
+    const [x] = toXY(0, col, size);
+    label(x, MARGIN - 14, COLUMN_LETTERS[col], 'middle');
+    label(x, far + 20, COLUMN_LETTERS[col], 'middle');
+  }
+  for (let row = 0; row < size; row++) {
+    const [, y] = toXY(row, 0, size);
+    // Row 0 is the bottom edge, which is line 1.
+    label(MARGIN - 12, y + 4, String(row + 1), 'end');
+    label(far + 12, y + 4, String(row + 1), 'start');
+  }
 }
 
 function starPoints(size) {
@@ -197,6 +274,7 @@ function renderProblem() {
     const [xa, ya] = toXY(0, i, size), [, yb] = toXY(size - 1, i, size);
     svg.appendChild(svgEl('line', {x1: xa, y1: ya, x2: xa, y2: yb, stroke: '#3a2c14', 'stroke-width': 1}));
   }
+  drawCoordinates(size);
   for (const [r, c] of starPoints(size)) {
     const [x, y] = toXY(r, c, size);
     svg.appendChild(svgEl('circle', {cx: x, cy: y, r: 2.5, fill: '#3a2c14'}));
@@ -223,15 +301,35 @@ function renderProblem() {
     }
   }
 
-  metaEl.textContent = `${p.game} · move ${p.moveNumber} · ${p.phase} · ` +
-    `${p.pointsLost.toFixed(1)} pts lost · ${p.mover === 'b' ? 'Black' : 'White'} to play`;
+  // A hand-picked note can cost almost no points while swinging the
+  // winrate hard, so lead with whichever number actually measures it.
+  const cost = p.source === 'note' && p.winrateDrop >= 0.01
+    ? `${(p.winrateDrop * 100).toFixed(0)}% winrate lost`
+    : `${p.pointsLost.toFixed(1)} pts lost`;
+  metaEl.innerHTML = '';
+  const tag = document.createElement('span');
+  tag.className = p.source === 'note' ? 'tag note' : 'tag';
+  tag.textContent = p.source === 'note' ? 'your note' : 'katago';
+  metaEl.appendChild(tag);
+  metaEl.appendChild(document.createTextNode(
+    `${p.game} · move ${p.moveNumber} · ${p.phase} · ${cost} · ` +
+    `${p.mover === 'b' ? 'Black' : 'White'} to play`));
+
   statusEl.textContent = 'Click a point on the board to guess.';
   statusEl.className = 'status';
+  noteBox.hidden = true;
+  noteText.textContent = '';
+  overrideBtn.hidden = true;
   lizzieStatusEl.textContent = '';
   nextBtn.disabled = true;
   document.getElementById('headerSub').textContent =
     `Problem ${idx + 1} of ${DATA.length} · generated __GENERATED__`;
 }
+
+const MARK_TEXT_FILL = {
+  'mark-best': '#1f4d2a', 'mark-alt': '#2f6b3a',
+  'mark-played': '#7a3f1f', 'mark-note': '#2c4a76',
+};
 
 function markPoint(row, col, size, label, cls) {
   const [x, y] = toXY(row, col, size);
@@ -239,27 +337,51 @@ function markPoint(row, col, size, label, cls) {
   g.appendChild(svgEl('circle', {cx: x, cy: y, r: CELL * 0.3, class: cls}));
   const text = svgEl('text', {
     x, y: y + 4, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 700,
-    fill: cls === 'mark-best' ? '#1f4d2a' : (cls === 'mark-played' ? '#7a3f1f' : '#1c3a63'),
+    fill: MARK_TEXT_FILL[cls] || '#1c3a63',
   });
   text.textContent = label;
   g.appendChild(text);
   svg.appendChild(g);
 }
 
+function same(a, b) {
+  return !!a && !!b && a[0] === b[0] && a[1] === b[1];
+}
+
 function reveal(p, guess) {
   const best = p.best;
   const played = p.played;
-  const correct = !!best && !!guess && guess[0] === best[0] && guess[1] === best[1];
+  const alternatives = p.alternatives || [];
+  // A position usually has more than one good move, and these are the
+  // ones this problem actually knows about: the other lines you played
+  // out, plus KataGo's pick when your note named a different move.
+  const correct = same(guess, best) || alternatives.some(alt => same(guess, alt));
 
   if (best) markPoint(best[0], best[1], p.boardSize, 'B', 'mark-best');
-  if (played && (!best || played[0] !== best[0] || played[1] !== best[1])) {
+  for (const alt of alternatives) {
+    if (!same(alt, played)) markPoint(alt[0], alt[1], p.boardSize, '=', 'mark-alt');
+  }
+  // Points your note talks about but nothing here recommends -- "the moyo
+  // at F7" means nothing until you can see where F7 is.
+  for (const v of (p.noteVertices || [])) {
+    if (same(v, best) || same(v, played) || alternatives.some(a => same(a, v))) continue;
+    markPoint(v[0], v[1], p.boardSize, 'N', 'mark-note');
+  }
+  if (played && !same(played, best)) {
     markPoint(played[0], played[1], p.boardSize, 'P', 'mark-played');
   }
-  if (guess && (!best || guess[0] !== best[0] || guess[1] !== best[1])) {
+  if (guess && !same(guess, best)) {
     markPoint(guess[0], guess[1], p.boardSize, '?', 'mark-guess');
   }
 
   document.querySelectorAll('#board circle[fill="transparent"]').forEach(el => el.remove());
+
+  // Your own diagnosis, in your own words -- the reason this position is
+  // in the deck at all, and worth more than the marked point.
+  if (p.note) {
+    noteText.textContent = p.note;
+    noteBox.hidden = false;
+  }
 
   if (!guess) {
     statusEl.textContent = best ? "Answer shown — not scored." : 'KataGo suggests passing here.';
@@ -268,8 +390,12 @@ function reveal(p, guess) {
     statusEl.textContent = `Correct! (${p.pointsLost.toFixed(1)} pts were lost by not playing this)`;
     statusEl.className = 'status correct';
   } else {
-    statusEl.textContent = `Not quite — KataGo preferred the marked point (${p.pointsLost.toFixed(1)} pts lost).`;
+    statusEl.textContent = `Not quite — the better move is marked B (${p.pointsLost.toFixed(1)} pts lost).`;
     statusEl.className = 'status wrong';
+    // Graded against KataGo's single top move, but your note may well have
+    // named a different move that is just as good (it often names a plan,
+    // not a point). You're the judge; this just fixes the scheduling.
+    overrideBtn.hidden = false;
   }
   nextBtn.disabled = false;
   nextBtn.focus();
@@ -291,6 +417,15 @@ skipBtn.addEventListener('click', () => {
   if (answered) return;
   answered = true;
   reveal(DATA[idx], null);
+});
+
+overrideBtn.addEventListener('click', async () => {
+  overrideBtn.hidden = true;
+  correctCount++;
+  scoreEl.textContent = `${correctCount} / ${answeredCount}`;
+  statusEl.textContent = 'Counted as correct.';
+  statusEl.className = 'status correct';
+  await saveResult(DATA[idx].id, true);
 });
 
 lizzieBtn.addEventListener('click', async () => {
@@ -355,6 +490,8 @@ async function saveResult(problemId, correct) {
 const style = document.createElement('style');
 style.textContent = '.mark-best{fill:#cdead4;stroke:#2f6b3a;stroke-width:1.5}' +
   '.mark-played{fill:#f6d9c9;stroke:#a5602f;stroke-width:1.5}' +
+  '.mark-alt{fill:#e4f0e7;stroke:#2f6b3a;stroke-width:1.5;stroke-dasharray:3 2}' +
+  '.mark-note{fill:#dfe7f3;stroke:#2c4a76;stroke-width:1.5;stroke-dasharray:3 2}' +
   '.mark-guess{fill:none;stroke:#1c3a63;stroke-width:2}';
 document.head.appendChild(style);
 

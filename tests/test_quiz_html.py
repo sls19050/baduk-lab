@@ -46,3 +46,50 @@ def test_problem_missing_from_games_is_skipped_not_crashed(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "known::m10" in text
     assert "missing::m5" not in text
+
+
+def _note_entry(problem_id="note::g::m10", game="g.sgf", move_number=10,
+                note="1 space jump at N8 is very heavy.", winrate_drop=0.21):
+    return ProblemIndexEntry(
+        problem_id=problem_id, game=game, move_number=move_number, phase="middle",
+        points_lost=0.8, path=f"notes/{game}_m{move_number}.sgf", played="D4",
+        best="Q16", source="note", note=note, winrate_drop=winrate_drop)
+
+
+def test_your_note_is_baked_into_the_page(tmp_path):
+    due = [_note_entry()]
+
+    out = render_quiz_html(due, _games_for("g.sgf", 20), tmp_path / "quiz.html", TODAY)
+
+    text = out.read_text(encoding="utf-8")
+    assert "1 space jump at N8 is very heavy." in text
+    assert '"source": "note"' in text or '"source":"note"' in text
+
+
+def test_both_decks_render_into_one_session(tmp_path):
+    due = [_entry("g1::m10", "g1.sgf", 10), _note_entry("note::g1::m20", "g1.sgf", 20)]
+
+    out = render_quiz_html(due, _games_for("g1.sgf", 40), tmp_path / "quiz.html", TODAY)
+
+    text = out.read_text(encoding="utf-8")
+    assert "g1::m10" in text
+    assert "note::g1::m20" in text
+
+
+def test_an_analyze_problem_carries_no_note(tmp_path):
+    out = render_quiz_html([_entry("g1::m10", "g1.sgf", 10)],
+                           _games_for("g1.sgf", 20), tmp_path / "quiz.html", TODAY)
+
+    text = out.read_text(encoding="utf-8")
+    assert '"note": ""' in text or '"note":""' in text
+
+
+def test_board_is_drawn_with_coordinate_labels(tmp_path):
+    """Your notes name points ("hane at L13"), so the board has to be
+    readable against them without counting lines."""
+    out = render_quiz_html([_entry("g1::m10", "g1.sgf", 10)],
+                           _games_for("g1.sgf", 20), tmp_path / "quiz.html", TODAY)
+
+    text = out.read_text(encoding="utf-8")
+    assert "drawCoordinates(size);" in text
+    assert "ABCDEFGHJKLMNOPQRST" in text  # Go skips I

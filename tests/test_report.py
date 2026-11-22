@@ -1,10 +1,13 @@
+import json
 from pathlib import Path
 
+from sgfmill import sgf as sgf_lib
 from sgfmill.common import move_from_vertex
 
 from baduk_lab import metrics, report
+from baduk_lab.annotations import AnnotatedMistake
 from baduk_lab.engine import GameAnalysis
-from baduk_lab.loader import GameRecord
+from baduk_lab.loader import GameRecord, Move
 from baduk_lab.strength import GameStrengthEstimate, SideEstimate
 from factories import PLAYER, build_analysis
 
@@ -205,3 +208,130 @@ def test_export_game_records_writes_one_entry_per_game(tmp_path):
     assert data["a.sgf"]["board_size"] == 19
     assert data["a.sgf"]["moves"] == [["b", [3, 3]], ["w", [3, 3]], ["b", [3, 3]]]
     assert data["b.sgf"]["moves"] == [["b", [3, 3]], ["w", [3, 3]]]
+
+
+# --- the notes deck (annotations.py's half of the problem set) ---------
+
+def _mistake(game="g.sgf", move_number=23, note="atari at R7", points_lost=0.8,
+             winrate_drop=0.12):
+    return AnnotatedMistake(
+        game=game, move_number=move_number, color="b", note=note,
+        played="S4", best="R7", points_lost=points_lost, winrate_drop=winrate_drop)
+
+
+def _note_record(name="g.sgf", total_moves=30):
+    return GameRecord(
+        path=Path(name), board_size=19, komi=6.5, player_black=PLAYER,
+        player_white="rival", result="", moves=[
+            Move(number=m, color=("b" if m % 2 == 1 else "w"), coord=(3, 3))
+            for m in range(1, total_moves + 1)
+        ])
+
+
+def test_export_and_load_note_index_round_trips_your_own_words(tmp_path):
+    mistake = _mistake(note="1 space jump at N8 is very heavy.")
+
+    report.export_note_index([mistake], tmp_path)
+    loaded = report.load_note_index(tmp_path)
+
+    assert len(loaded) == 1
+    assert loaded[0].problem_id == mistake.problem_id
+    assert loaded[0].note == "1 space jump at N8 is very heavy."
+    assert loaded[0].source == "note"
+    assert loaded[0].winrate_drop == 0.12
+
+
+def test_load_note_index_is_empty_when_notes_never_ran(tmp_path):
+    assert report.load_note_index(tmp_path) == []
+
+
+def test_note_entries_cannot_collide_with_analyze_entries(tmp_path):
+    """Both decks can hold the same game at the same move -- they're found
+    different ways -- and each has to keep its own review history."""
+    analysis = build_analysis(30, "b", losses={23: 10.0}, name="g.sgf")
+    problems = metrics.problem_positions([analysis], PLAYER)
+
+    report.export_problem_index(problems, tmp_path)
+    report.export_note_index([_mistake(game="g.sgf", move_number=23)], tmp_path)
+
+    ids = ({e.problem_id for e in report.load_problem_index(tmp_path)} |
+           {e.problem_id for e in report.load_note_index(tmp_path)})
+    assert len(ids) == 2
+
+
+def test_export_note_sgfs_hides_your_move_and_attaches_your_note(tmp_path):
+    report.export_note_sgfs([_mistake()], tmp_path, {"g.sgf": _note_record()})
+
+    path = tmp_path / "notes" / "g_m023.sgf"
+    game = sgf_lib.Sgf_game.from_bytes(path.read_bytes())
+    assert "atari at R7" in game.get_root().get("C")
+
+    # The recorded line stops before move 23 (root + moves 1..22), and
+    # both answers hang off it as siblings.
+    branch_point = game.get_main_sequence()[22]
+    assert len(branch_point) == 2
+    assert {node.get_move()[1] for node in branch_point} == {
+        move_from_vertex("S4", 19), move_from_vertex("R7", 19)}
+
+
+def test_export_note_sgfs_skips_a_game_it_has_no_moves_for(tmp_path):
+    report.export_note_sgfs([_mistake(game="missing.sgf")], tmp_path, {})
+
+    assert not (tmp_path / "notes").exists() or \
+        list((tmp_path / "notes").iterdir()) == []
+
+
+def test_export_note_sgfs_removes_the_file_of_a_note_you_moved(tmp_path):
+    """Re-reviewing a game and putting the comment on a different move must
+    not leave the old move's problem behind in problems/notes/."""
+    records = {"g.sgf": _note_record()}
+    report.export_note_sgfs([_mistake(move_number=23)], tmp_path, records)
+    assert (tmp_path / "notes" / "g_m023.sgf").exists()
+
+    report.export_note_sgfs([_mistake(move_number=19)], tmp_path, records)
+
+    assert (tmp_path / "notes" / "g_m019.sgf").exists()
+    assert not (tmp_path / "notes" / "g_m023.sgf").exists()
+
+
+def test_export_note_sgfs_leaves_other_games_alone(tmp_path):
+    records = {"g.sgf": _note_record(), "h.sgf": _note_record("h.sgf")}
+    report.export_note_sgfs(
+        [_mistake(game="g.sgf"), _mistake(game="h.sgf")], tmp_path, records)
+
+    # a harvest that still finds both notes keeps both files
+    report.export_note_sgfs(
+        [_mistake(game="g.sgf"), _mistake(game="h.sgf")], tmp_path, records)
+
+    assert {p.name for p in (tmp_path / "notes").glob("*.sgf")} == {
+        "g_m023.sgf", "h_m023.sgf"}
+
+
+def test_load_game_records_merges_both_decks(tmp_path):
+    report.export_game_records([build_analysis(2, "b", losses={}, name="a.sgf")], tmp_path)
+    report.export_note_game_records({"n.sgf": _note_record("n.sgf", 2)}, tmp_path)
+
+    assert set(report.load_game_records(tmp_path)) == {"a.sgf", "n.sgf"}
+
+
+def test_load_game_records_survives_either_deck_missing(tmp_path):
+    assert report.load_game_records(tmp_path) == {}
+
+    report.export_note_game_records({"n.sgf": _note_record("n.sgf", 2)}, tmp_path)
+    assert set(report.load_game_records(tmp_path)) == {"n.sgf"}
+
+
+def test_an_index_written_before_the_notes_deck_existed_still_loads(tmp_path):
+    """source/note/winrate_drop were added to ProblemIndexEntry later; an
+    index.json from an earlier `analyze` run has none of them."""
+    (tmp_path / "index.json").write_text(json.dumps([{
+        "problem_id": "g::m10", "game": "g.sgf", "move_number": 10,
+        "phase": "opening", "points_lost": 9.0, "path": "opening/g_m010.sgf",
+        "played": "D4", "best": "Q16",
+    }]), encoding="utf-8")
+
+    entry = report.load_problem_index(tmp_path)[0]
+
+    assert entry.source == "katago"
+    assert entry.note == ""
+    assert entry.winrate_drop == 0.0

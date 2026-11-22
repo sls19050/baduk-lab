@@ -22,3 +22,12 @@ default_folder = "C:\\Program Files (x86)\\TygemGlobal2.0\\Gibo"
 # one" dives, not casual browsing. Leave unset/delete this section to hide
 # the button's functionality (it still shows, just errors when clicked).
 exe = "C:\\path\\to\\lizzieyzy-next\\LizzieYzy Next\\LizzieYzy Next.exe"
+
+[annotations]
+# Optional. Folder scanned by `baduk-lab notes`, which harvests the
+# mistakes you commented on yourself while reviewing a game -- every node
+# you typed a comment on becomes a quiz problem, graded against the KataGo
+# analysis already stored in the same file (so this never starts the
+# engine). For LizzieYzy Next this is its own AnalyzedGames folder, where
+# "Save analyzed game" writes to. Scanned recursively.
+folder = "C:\\path\\to\\lizzieyzy-next\\LizzieYzy Next\\user-data\\AnalyzedGames"

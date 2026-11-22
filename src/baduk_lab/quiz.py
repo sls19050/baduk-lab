@@ -61,6 +61,22 @@ def sync_new_problems(state: dict, problems: list[_Problem], today: date) -> dic
     return state
 
 
+def drop_missing(state: dict, problems: list[_Problem], *, prefix: str) -> list[str]:
+    """Forget tracked problems under `prefix` that the current harvest no
+    longer produces, and return their ids.
+
+    Counterpart to sync_new_problems: a review note the user moves to a
+    different move leaves its old entry behind, and that entry's box and
+    next_due describe a problem the deck no longer shows. Scoped by prefix
+    because quiz_state.json is shared with the other decks, whose problems
+    are not loaded on this run -- an unscoped sweep would erase them."""
+    live = {p.problem_id for p in problems}
+    stale = sorted(k for k in state if k.startswith(prefix) and k not in live)
+    for key in stale:
+        del state[key]
+    return stale
+
+
 def due_problems(state: dict, problems: list[_Problem], today: date) -> list[_Problem]:
     """Problems whose next_due has arrived, worst points-lost first. A
     problem with no state entry yet is treated as due (call
