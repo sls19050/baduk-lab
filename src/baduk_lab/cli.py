@@ -50,13 +50,15 @@ _LOCAL_KATAGO_BUILDS = ["katago"]
 #
 # Deliberately not a step-count or mtime sort: the step number is not a proxy for
 # strength. s11003M-d5973M-7gres (14606) outrates the later s12002M-d6304M
-# (14596), and the four nets uploaded after s12002M all rate below it -- so both
-# "highest steps" and "newest" pick a weaker net here.
+# (14596), and s12382M-d6533M (14643) outrates the higher-step s12752M-d6531M
+# (14480) -- so both "highest steps" and "newest" pick a weaker net here.
 #
 # Only confidently-rated nets belong here. A fresh upload is rated on zero games
 # (the latest can carry +-200 Elo), so an unlisted net sorts last instead of
 # being adopted on a provisional number.
 _NET_ELO = {
+    "kata1-tf3-b11c768-s12382M-d6533M": 14642.6,
+    "kata1-tf3-b11c768-s12502M-d6619M": 14639.5,
     "kata1-tf3-b11c768-s11003M-d5973M-7gres": 14606.2,
     "kata1-tf3-b11c768-s12002M-d6304M": 14596.8,
     "kata1-tf3-b11c768-s12252M-d6398M": 14565.0,
@@ -69,6 +71,7 @@ _NET_ELO = {
     "kata1-zhizi-b40c768nbt-s11472M-d5982M": 14515.9,
     "kata1-tf3-b11c768-s11341M-d6089M": 14503.6,
     "kata1-zhizi-b40c768nbt-fdx6d": 14481.6,
+    "kata1-tf3-b11c768-s12752M-d6531M": 14480.2,
     "kata1-zhizi-b40c768nbt-fdx6c": 14453.6,
     "kata1-tf3-b10c512-s3203M-d5937M": 14169.6,
     "kata1-zhizi-b28c512nbt-muonfd2": 14159.0,
