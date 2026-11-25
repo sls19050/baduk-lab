@@ -18,7 +18,9 @@ Three things have to be read out of those files:
 
 1. **Your text, separated from LizzieYzy's.** LizzieYzy writes its own
    winrate/lead block into `C[]` and appends whatever you type after it.
-   `user_note` strips the generated lines and keeps the rest.
+   `user_note` strips the generated lines and keeps the rest -- including
+   the handles/result header it stamps onto move 1 of an imported game,
+   which otherwise becomes a card for a move you never commented on.
 
 2. **Which move the note is about.** You comment from wherever the board
    happened to be sitting, which is sometimes the mistake itself ("1 space
@@ -89,7 +91,22 @@ _GENERATED_LINE_RES = [
     re.compile(r"^Engine Rules:"),
     re.compile(r"^(Black|White) AI accuracy:"),
     re.compile(r"^(Black|White) mismatch\("),
+    # The result line of the game-info header below. Matched on the shape
+    # of a Go result rather than against the root's RE[], which LizzieYzy
+    # leaves empty on some exports even while writing this line.
+    re.compile(r"^Result:\s*([BW]\+|Draw|Jigo|Void|Unknown|\?)", re.IGNORECASE),
 ]
+
+# The rest of that header: LizzieYzy stamps the two handles and the result
+# onto the *first move* of a game it imported rather than onto the root, so
+# the root-skip in `resolve_notes` never sees it and the block reads as a
+# note about move 1 -- one junk card per imported game, carrying the whole
+# game info where its note should be.
+#
+# Shape alone cannot separate "White: ikirushia" from a note of yours that
+# opens "White: must defend first", so a handle line is dropped only when
+# it repeats a player of this very game.
+_GAME_INFO_NAME_RE = re.compile(r"^(Black|White):\s*(?P<name>.+?)\s*$")
 
 # One candidate inside an LZ[]/LZOP[] payload. Entries are separated by
 # " info ", each starting "move <vertex> visits <n> ...". Every field after
@@ -166,11 +183,23 @@ class AnnotatedMistake:
         return f"note::{Path(self.game).stem}::m{self.move_number}"
 
 
-def user_note(comment: str) -> str:
+def user_note(comment: str, players: Sequence[str] = ()) -> str:
     """Your own text from one C[] value, with LizzieYzy's generated
-    winrate/lead/accuracy lines removed. Empty if you wrote nothing."""
-    kept = [line for line in comment.splitlines()
-            if not any(r.match(line.strip()) for r in _GENERATED_LINE_RES)]
+    winrate/lead/accuracy lines removed. Empty if you wrote nothing.
+
+    `players` is this game's two handles, which is what lets the game-info
+    header be told from a note of yours that merely starts the same way.
+    Without them those handle lines are kept, exactly as before."""
+    handles = {p.strip().lower() for p in players if p and p.strip()}
+    kept = []
+    for line in comment.splitlines():
+        stripped = line.strip()
+        if any(r.match(stripped) for r in _GENERATED_LINE_RES):
+            continue
+        named = _GAME_INFO_NAME_RE.match(stripped)
+        if named and named.group("name").lower() in handles:
+            continue
+        kept.append(line)
     return "\n".join(kept).strip()
 
 
@@ -383,7 +412,8 @@ def resolve_notes(path: Path, player: str | Sequence[str]) -> NoteResolution | N
     for index, node in enumerate(sequence):
         if index == 0 or not node.has_property("C"):
             continue
-        note = user_note(node.get("C"))
+        note = user_note(node.get("C"),
+                         (record.player_black, record.player_white))
         if not note:
             continue
 

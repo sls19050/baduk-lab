@@ -100,6 +100,38 @@ def test_user_note_drops_the_roots_accuracy_summary():
     assert annotations.user_note(root_comment) == ""
 
 
+def test_user_note_drops_the_game_info_header_off_move_one():
+    """A game LizzieYzy imported carries its handles and result on move 1,
+    not on the root, so the root-skip never sees it. Left in, every such
+    game donates one card whose "note" is the game info."""
+    header = ("White: rival\nBlack: hero\nResult: W+Resign\n\n\n"
+              "Black win rate: 46.9% (-0.3%)\n"
+              "lead: -0.3 (-0.0) stdev: 12.9\n"
+              "(komi65 / 8.1k visits)\nkomi: 6.5 WRN:0.04")
+
+    assert annotations.user_note(header, (PLAYER, "rival")) == ""
+    # Your own text on that same node still survives beside it.
+    assert annotations.user_note(f"{header}\nQ4 is slack.",
+                                 (PLAYER, "rival")) == "Q4 is slack."
+
+
+def test_user_note_keeps_a_note_that_merely_starts_like_the_header():
+    """"White: ..." is only the header when it repeats a player of this
+    game -- otherwise it is how you wrote a note about White's move."""
+    note = annotations.user_note(
+        _engine_comment("White: must defend the corner first"),
+        (PLAYER, "rival"))
+
+    assert note == "White: must defend the corner first"
+
+
+def test_user_note_without_players_keeps_the_handle_lines():
+    """The players are optional, so an existing caller that passes only a
+    comment behaves as it did -- the result line is shape-matched and still
+    goes, the handles stay."""
+    assert annotations.user_note("White: rival\nResult: W+Resign") == "White: rival"
+
+
 # --- resolving a note to the move it is about -------------------------
 
 def test_note_on_your_own_move_is_about_that_move(tmp_path):
