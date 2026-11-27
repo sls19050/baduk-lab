@@ -26,8 +26,9 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (annotations, config, drill, drill_html, metrics, note_check, quiz,
-               quiz_html, report, selfplay, strength, strength_chart, tidy)
+from . import (annotations, card_edits, config, drill, drill_html, metrics,
+               note_check, quiz, quiz_html, report, selfplay, strength,
+               strength_chart, tidy)
 from .engine import GameAnalysis, KataGoClient
 from .loader import GameRecord, load_folder
 
@@ -494,6 +495,11 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
     is nothing for the page to pick. state_lock serializes writes since
     ThreadingHTTPServer can run request handlers concurrently.
 
+    POST /card-edit saves (or, with "reset": true, removes) your edit to
+    one card's answer and note in card_edits.json -- see card_edits.py.
+    `harvested` is each served card as the deck file has it, before any
+    edit, so the first edit can record what it replaced.
+
     All class attributes are set once in _serve_and_open before the server
     starts -- this process only ever runs one review session at a time."""
     problems_dir: Path | None = None
@@ -501,6 +507,8 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
     lizzieyzy_proc: subprocess.Popen | None = None
     state_path: Path | None = None
     state_lock = threading.Lock()
+    edits_path: Path | None = None
+    harvested: dict = {}
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/open-lizzie":
@@ -512,7 +520,48 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
         if urlparse(self.path).path == "/quiz-state":
             self._handle_save_state()
             return
+        if urlparse(self.path).path == "/card-edit":
+            self._handle_card_edit()
+            return
         self.send_error(404)
+
+    def _handle_card_edit(self) -> None:
+        if self.edits_path is None:
+            self._json(400, {"ok": False, "error": "Card editing is not enabled here."})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            problem_id = str(body["problemId"])
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            self._json(400, {"ok": False, "error": f"Bad request: {exc}"})
+            return
+        if problem_id not in self.harvested:
+            self._json(400, {"ok": False, "error": f"Unknown card: {problem_id!r}"})
+            return
+
+        with self.state_lock:
+            edits = card_edits.load(self.edits_path)
+            try:
+                if body.get("reset"):
+                    card_edits.reset(edits, problem_id)
+                else:
+                    card_edits.set_edit(edits, self.harvested[problem_id], problem_id,
+                                        body.get("best"), body.get("alternatives"),
+                                        body.get("note"), date.today())
+            except ValueError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+            card_edits.save(self.edits_path, edits)
+        reply: dict = {"ok": True}
+        board_size = body.get("boardSize")
+        if not body.get("reset") and isinstance(board_size, int):
+            # Same rule the harvest uses, so an edited note marks its points
+            # exactly as a harvested one would.
+            note = edits[problem_id]["note"]
+            reply["noteVertices"] = quiz_html._coords(
+                annotations.vertices_in(note, board_size), board_size)
+        self._json(200, reply)
 
     def _handle_save_state(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
@@ -568,7 +617,8 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path: Path) -> None:
+def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path: Path,
+                    edits_path: Path | None = None, harvested: dict | None = None) -> None:
     """Serve out_dir on 127.0.0.1 and open filename in the default browser.
 
     quiz.html grades each answer via a fetch() POST to /quiz-state on this
@@ -583,6 +633,8 @@ def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path
     _QuizRequestHandler.lizzieyzy_exe = config.lizzieyzy_exe()
     _QuizRequestHandler.lizzieyzy_proc = None
     _QuizRequestHandler.state_path = state_path
+    _QuizRequestHandler.edits_path = edits_path
+    _QuizRequestHandler.harvested = harvested or {}
     handler = functools.partial(_QuizRequestHandler, directory=str(out_dir))
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
@@ -645,6 +697,12 @@ def _run_review(args: argparse.Namespace) -> None:
     if args.phase:
         problems = [p for p in problems if p.phase == args.phase]
 
+    # Your edits from the quiz page's "Edit card" win over the harvested
+    # answer and note, in both front ends.
+    harvested = {p.problem_id: p for p in problems}
+    edits_path = out_dir / card_edits.FILENAME
+    problems = card_edits.apply(problems, card_edits.load(edits_path))
+
     state_path = out_dir / "quiz_state.json"
     state = quiz.load_state(state_path)
     today = date.today()
@@ -664,9 +722,11 @@ def _run_review(args: argparse.Namespace) -> None:
             sys.exit(f"No games.json/{report.NOTES_GAMES_FILENAME} found in "
                      f"{problems_dir}. Re-run `baduk-lab analyze` or "
                      "`baduk-lab notes` to regenerate it.")
-        quiz_html.render_quiz_html(due, games, out_dir / "quiz.html", today)
+        quiz_html.render_quiz_html(due, games, out_dir / "quiz.html", today,
+                                   originals=harvested)
         print(f"{len(due)} problem(s) ready.")
-        _serve_and_open(out_dir, problems_dir, "quiz.html", state_path)
+        _serve_and_open(out_dir, problems_dir, "quiz.html", state_path,
+                        edits_path=edits_path, harvested=harvested)
         return
 
     if not due:

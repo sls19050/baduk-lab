@@ -379,6 +379,30 @@ A few details worth knowing:
   kept in separate files (`problems/notes_index.json` vs `index.json`), so
   neither command can clobber the other's work.
 
+### Editing a card's answer and note
+
+A card's answer is whatever KataGo search was saved when it was harvested,
+so a stronger network can disagree with it later, and a note sometimes
+needs rewording. After a card is revealed in the browser quiz, **Edit card**
+lets you fix both:
+
+- Click an empty point to cycle it: not accepted → `=` also right → `B`
+  main answer → not accepted. Making a point `B` turns the old main answer
+  into an `=` instead of dropping it. The move actually played can be
+  accepted too, and is then marked `P=`.
+- Rewrite the note in the text box. Points the new note names are marked
+  `N`, the same as for a harvested note.
+- **Save** applies the change to the card right away and in every later
+  session, for both decks. **Reset to harvested** goes back to what the
+  game file says.
+
+Edits are saved in `report/card_edits.json`, which `notes` and `analyze`
+never write, so they survive every re-harvest. That also means an edit
+keeps winning even if you later re-analyze the game or change the comment
+in LizzieYzy. Reset the card to pick up the new version. Each entry also
+records what the card said before you first edited it (`was`). Editing
+doesn't change the grade you already got for that card.
+
 ### Comments on the wrong move: `baduk-lab notes --check`
 
 You comment from wherever the board happens to be, so a note doesn't

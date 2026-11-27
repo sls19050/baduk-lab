@@ -32,7 +32,7 @@ from pathlib import Path
 
 from sgfmill.common import move_from_vertex
 
-from . import board
+from . import annotations, board
 from .report import ProblemIndexEntry
 
 
@@ -46,8 +46,17 @@ def _coords(vertices: list[str], board_size: int) -> list[list[int]]:
     return out
 
 
+def _vertex(coord_vertex: str, board_size: int) -> list[int] | None:
+    coord = move_from_vertex(coord_vertex, board_size) if coord_vertex else None
+    return list(coord) if coord else None
+
+
 def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
-                     today: date) -> Path:
+                     today: date, originals: dict | None = None) -> Path:
+    """`originals` maps problem_id to the card as harvested, before any of
+    your card_edits -- the page needs it to show which cards you edited and
+    to reset one without reloading. Without it no card counts as edited."""
+    originals = originals or {}
     problems = []
     for p in due:
         game_info = games.get(p.game)
@@ -59,6 +68,12 @@ def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
         stones = board.board_before(moves, board_size, p.move_number)
         played_coord = move_from_vertex(p.played, board_size)
         best_coord = move_from_vertex(p.best, board_size)
+        orig = originals.get(p.problem_id, p)
+        edited = (orig.best, list(orig.alternatives), orig.note) != \
+            (p.best, list(p.alternatives), p.note)
+        # An edited note may name different points than the harvested one.
+        note_vertices = (annotations.vertices_in(p.note, board_size)
+                         if edited and p.note != orig.note else p.note_vertices)
         problems.append({
             "id": p.problem_id,
             "game": p.game,
@@ -75,8 +90,15 @@ def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
             "note": p.note,
             "winrateDrop": round(p.winrate_drop, 3),
             "alternatives": _coords(p.alternatives, board_size),
-            "noteVertices": _coords(p.note_vertices, board_size),
+            "noteVertices": _coords(note_vertices, board_size),
             "opponent": p.opponent,
+            "edited": edited,
+            "orig": {
+                "best": _vertex(orig.best, board_size),
+                "alternatives": _coords(orig.alternatives, board_size),
+                "note": orig.note,
+                "noteVertices": _coords(orig.note_vertices, board_size),
+            },
         })
 
     payload = json.dumps(problems).replace("</", "<\\/")
@@ -143,6 +165,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
     font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
     color: #2c4a76; display: block; margin-bottom: 4px;
   }
+  .tag.edited { background: #f3e6c8; color: #7a5a14; }
+  .edit-panel {
+    margin-top: 12px; padding: 12px; border: 1px dashed #b89a5c; border-radius: 6px;
+    background: #fdf9f0;
+  }
+  .edit-panel .hint { font-size: 13px; color: #6b6156; margin-bottom: 8px; }
+  .edit-panel textarea {
+    width: 100%; box-sizing: border-box; min-height: 90px; font: inherit;
+    padding: 8px; border: 1px solid #c9beac; border-radius: 6px; resize: vertical;
+  }
+  .edit-panel .answers { font-size: 13px; margin: 8px 0; font-variant-numeric: tabular-nums; }
+  .edit-status { font-size: 12px; min-height: 16px; margin-top: 6px; color: #6b6156; }
+  .edit-status.bad { color: #a53f3f; }
   #done { max-width: 620px; text-align: center; }
   #done h2 { margin-bottom: 4px; }
   .legend { font-size: 12px; color: #6b6156; margin-top: 10px; }
@@ -174,13 +209,28 @@ _TEMPLATE = r"""<!DOCTYPE html>
       <button id="lizzieBtn">Deep analysis in LizzieYzy</button>
       <button id="skipBtn">Skip (show answer)</button>
       <button id="overrideBtn" hidden>My move was fine &mdash; count it</button>
+      <button id="editBtn" hidden>Edit card</button>
       <button id="nextBtn" class="primary" disabled>Next &rarr;</button>
+    </div>
+    <div class="edit-panel" id="editPanel" hidden>
+      <div class="hint">Click an empty point to change it:
+        not accepted &rarr; <b>=</b> also right &rarr; <b>B</b> main answer &rarr; not accepted.
+        Saving updates the card now and in every later session, and survives re-harvests;
+        the grade you already got for this card stays as it was.</div>
+      <div class="answers" id="editAnswers"></div>
+      <textarea id="editNote" placeholder="Your note for this card"></textarea>
+      <div class="actions">
+        <button id="editSaveBtn" class="primary">Save</button>
+        <button id="editCancelBtn">Cancel</button>
+        <button id="editResetBtn">Reset to harvested</button>
+      </div>
+      <div class="edit-status" id="editStatus"></div>
     </div>
     <div id="lizzieStatus" class="lizzie-status"></div>
     <div class="legend">
       <span class="swatch-best">B</span>the answer
       <span class="swatch-alt">=</span>also counts as right
-      <span class="swatch-played">P</span>what you actually played
+      <span class="swatch-played">P</span>what was actually played
       <span class="swatch-note">N</span>other points your note names
     </div>
   </div>
@@ -202,6 +252,8 @@ const CELL = 30, MARGIN = 30;
 const COLUMN_LETTERS = 'ABCDEFGHJKLMNOPQRST';
 
 let idx = 0, correctCount = 0, answeredCount = 0, answered = false;
+let lastGuess = null;   // the point clicked for this card, kept to redraw marks after an edit
+let draft = null;       // {best, alternatives} while the card editor is open
 
 const svg = document.getElementById('board');
 const metaEl = document.getElementById('meta');
@@ -215,6 +267,11 @@ const noteText = document.getElementById('noteText');
 const saveStatusEl = document.getElementById('saveStatus');
 const lizzieBtn = document.getElementById('lizzieBtn');
 const lizzieStatusEl = document.getElementById('lizzieStatus');
+const editBtn = document.getElementById('editBtn');
+const editPanel = document.getElementById('editPanel');
+const editAnswers = document.getElementById('editAnswers');
+const editNote = document.getElementById('editNote');
+const editStatus = document.getElementById('editStatus');
 
 function svgEl(tag, attrs) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -260,9 +317,9 @@ function starPoints(size) {
   return [];
 }
 
-function renderProblem() {
-  const p = DATA[idx];
-  answered = false;
+// The grid, stones, and (when onClick is given) a click target on every
+// empty point. Marks go on top afterwards.
+function drawBoard(p, onClick) {
   const size = p.boardSize;
   const dim = MARGIN * 2 + (size - 1) * CELL;
   svg.setAttribute('width', dim);
@@ -292,16 +349,25 @@ function renderProblem() {
     }));
   }
 
+  if (!onClick) return;
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) {
       if (occupied.has(r + ',' + c)) continue;
       const [x, y] = toXY(r, c, size);
       const hit = svgEl('circle', {cx: x, cy: y, r: CELL * 0.48, fill: 'transparent', style: 'cursor:pointer'});
-      hit.addEventListener('click', () => onGuess(r, c));
+      hit.addEventListener('click', () => onClick(r, c));
       svg.appendChild(hit);
     }
   }
+}
 
+// Click targets go last in drawBoard, so marks drawn after them would sit
+// on top and swallow the click; in edit mode they're re-added above marks.
+function raiseClickTargets() {
+  svg.querySelectorAll('circle[fill="transparent"]').forEach(el => svg.appendChild(el));
+}
+
+function renderMeta(p) {
   // A hand-picked note can cost almost no points while swinging the
   // winrate hard, so lead with whichever number actually measures it.
   const cost = p.source === 'note' && p.winrateDrop >= 0.01
@@ -313,15 +379,31 @@ function renderProblem() {
   tag.textContent = p.source !== 'note' ? 'katago'
     : p.opponent ? "your note · opponent's move" : 'your note';
   metaEl.appendChild(tag);
+  if (p.edited) {
+    const ed = document.createElement('span');
+    ed.className = 'tag edited';
+    ed.textContent = 'edited';
+    metaEl.appendChild(ed);
+  }
   metaEl.appendChild(document.createTextNode(
     `${p.game} · move ${p.moveNumber} · ${p.phase} · ${cost} · ` +
     `${p.mover === 'b' ? 'Black' : 'White'} to play`));
+}
+
+function renderProblem() {
+  const p = DATA[idx];
+  answered = false;
+  lastGuess = null;
+  closeEditor();
+  drawBoard(p, onGuess);
+  renderMeta(p);
 
   statusEl.textContent = 'Click a point on the board to guess.';
   statusEl.className = 'status';
   noteBox.hidden = true;
   noteText.textContent = '';
   overrideBtn.hidden = true;
+  editBtn.hidden = true;
   lizzieStatusEl.textContent = '';
   nextBtn.disabled = true;
   document.getElementById('headerSub').textContent =
@@ -350,14 +432,19 @@ function same(a, b) {
   return !!a && !!b && a[0] === b[0] && a[1] === b[1];
 }
 
-function reveal(p, guess) {
+// A position usually has more than one good move, and these are the
+// ones this problem actually knows about: the other lines you played
+// out, KataGo's pick when your note named a different move, and any you
+// accepted yourself with "Edit card".
+function isCorrect(p, guess) {
+  return same(guess, p.best) || (p.alternatives || []).some(alt => same(guess, alt));
+}
+
+function drawMarks(p, guess) {
   const best = p.best;
   const played = p.played;
   const alternatives = p.alternatives || [];
-  // A position usually has more than one good move, and these are the
-  // ones this problem actually knows about: the other lines you played
-  // out, plus KataGo's pick when your note named a different move.
-  const correct = same(guess, best) || alternatives.some(alt => same(guess, alt));
+  const playedAccepted = alternatives.some(a => same(a, played));
 
   if (best) markPoint(best[0], best[1], p.boardSize, 'B', 'mark-best');
   for (const alt of alternatives) {
@@ -370,20 +457,30 @@ function reveal(p, guess) {
     markPoint(v[0], v[1], p.boardSize, 'N', 'mark-note');
   }
   if (played && !same(played, best)) {
-    markPoint(played[0], played[1], p.boardSize, 'P', 'mark-played');
+    // The move actually played can itself be accepted (a newer network
+    // may rate it fine), so say so rather than hide the '=' under the P.
+    markPoint(played[0], played[1], p.boardSize, playedAccepted ? 'P=' : 'P', 'mark-played');
   }
   if (guess && !same(guess, best)) {
     markPoint(guess[0], guess[1], p.boardSize, '?', 'mark-guess');
   }
+}
 
-  document.querySelectorAll('#board circle[fill="transparent"]').forEach(el => el.remove());
+// Your own diagnosis, in your own words -- the reason this position is
+// in the deck at all, and worth more than the marked point.
+function showNote(p) {
+  noteText.textContent = p.note || '';
+  noteBox.hidden = !p.note;
+}
 
-  // Your own diagnosis, in your own words -- the reason this position is
-  // in the deck at all, and worth more than the marked point.
-  if (p.note) {
-    noteText.textContent = p.note;
-    noteBox.hidden = false;
-  }
+function reveal(p, guess) {
+  const best = p.best;
+  const correct = isCorrect(p, guess);
+
+  drawBoard(p, null);
+  drawMarks(p, guess);
+  showNote(p);
+  editBtn.hidden = false;
 
   if (!guess) {
     statusEl.textContent = best ? "Answer shown — not scored." : 'KataGo suggests passing here.';
@@ -408,7 +505,8 @@ async function onGuess(row, col) {
   if (answered) return;
   answered = true;
   const p = DATA[idx];
-  const correct = reveal(p, [row, col]);
+  lastGuess = [row, col];
+  const correct = reveal(p, lastGuess);
   answeredCount++;
   if (correct) correctCount++;
   scoreEl.textContent = `${correctCount} / ${answeredCount}`;
@@ -428,6 +526,131 @@ overrideBtn.addEventListener('click', async () => {
   statusEl.textContent = 'Counted as correct.';
   statusEl.className = 'status correct';
   await saveResult(DATA[idx].id, true);
+});
+
+// --- editing a card: its accepted answers and its note --------------------
+
+function vertexOf(pt) {
+  return COLUMN_LETTERS[pt[1]] + (pt[0] + 1);
+}
+
+function closeEditor() {
+  draft = null;
+  editPanel.hidden = true;
+  editStatus.textContent = '';
+  editStatus.className = 'edit-status';
+}
+
+function renderDraft() {
+  const p = DATA[idx];
+  drawBoard(p, onEditClick);
+  if (draft.best) markPoint(draft.best[0], draft.best[1], p.boardSize, 'B', 'mark-best');
+  for (const a of draft.alternatives) markPoint(a[0], a[1], p.boardSize, '=', 'mark-alt');
+  // Where the move was actually played, for reference -- not an answer
+  // unless you mark it as one.
+  const played = p.played;
+  if (played && !same(played, draft.best) && !draft.alternatives.some(a => same(a, played))) {
+    markPoint(played[0], played[1], p.boardSize, 'P', 'mark-played');
+  }
+  raiseClickTargets();
+  editAnswers.textContent =
+    `Main answer: ${draft.best ? vertexOf(draft.best) : '(none)'} · also right: ` +
+    (draft.alternatives.length ? draft.alternatives.map(vertexOf).join(', ') : '(none)');
+}
+
+// not accepted -> '=' -> 'B' -> not accepted. Promoting a point to 'B'
+// demotes the old main answer to '=' rather than dropping it.
+function onEditClick(row, col) {
+  const pt = [row, col];
+  if (same(pt, draft.best)) {
+    draft.best = null;
+  } else if (draft.alternatives.some(a => same(a, pt))) {
+    draft.alternatives = draft.alternatives.filter(a => !same(a, pt));
+    if (draft.best) draft.alternatives.push(draft.best);
+    draft.best = pt;
+  } else {
+    draft.alternatives.push(pt);
+  }
+  editStatus.textContent = '';
+  editStatus.className = 'edit-status';
+  renderDraft();
+}
+
+function redrawRevealed() {
+  const p = DATA[idx];
+  drawBoard(p, null);
+  drawMarks(p, lastGuess);
+  showNote(p);
+  renderMeta(p);
+}
+
+function editFailed(message) {
+  editStatus.textContent = message;
+  editStatus.className = 'edit-status bad';
+}
+
+async function postEdit(body) {
+  try {
+    const res = await fetch('/card-edit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch (err) {
+    return {ok: false, error: 'Could not reach the local server: ' + err.message};
+  }
+}
+
+editBtn.addEventListener('click', () => {
+  const p = DATA[idx];
+  draft = {best: p.best, alternatives: (p.alternatives || []).slice()};
+  editNote.value = p.note || '';
+  editPanel.hidden = false;
+  renderDraft();
+});
+
+document.getElementById('editCancelBtn').addEventListener('click', () => {
+  closeEditor();
+  redrawRevealed();
+});
+
+document.getElementById('editSaveBtn').addEventListener('click', async () => {
+  const p = DATA[idx];
+  if (!draft.best) {
+    editFailed(draft.alternatives.length
+      ? 'Pick a main answer: click one of the = points again to make it B.'
+      : 'A card needs at least one answer: click a point.');
+    return;
+  }
+  const note = editNote.value.trim();
+  const body = await postEdit({
+    problemId: p.id, best: vertexOf(draft.best),
+    alternatives: draft.alternatives.map(vertexOf), note, boardSize: p.boardSize,
+  });
+  if (!body.ok) { editFailed('Not saved: ' + body.error); return; }
+  p.best = draft.best;
+  p.alternatives = draft.alternatives;
+  p.note = note;
+  if (body.noteVertices) p.noteVertices = body.noteVertices;
+  p.edited = true;
+  closeEditor();
+  redrawRevealed();
+  lizzieStatusEl.textContent = 'Card saved to card_edits.json ✓';
+});
+
+document.getElementById('editResetBtn').addEventListener('click', async () => {
+  const p = DATA[idx];
+  const body = await postEdit({problemId: p.id, reset: true});
+  if (!body.ok) { editFailed('Not reset: ' + body.error); return; }
+  p.best = p.orig.best;
+  p.alternatives = p.orig.alternatives.slice();
+  p.note = p.orig.note;
+  p.noteVertices = p.orig.noteVertices;
+  p.edited = false;
+  closeEditor();
+  redrawRevealed();
+  lizzieStatusEl.textContent = 'Card reset to its harvested answer and note ✓';
 });
 
 lizzieBtn.addEventListener('click', async () => {
@@ -459,6 +682,8 @@ function next() {
 }
 nextBtn.addEventListener('click', next);
 document.addEventListener('keydown', (e) => {
+  // Typing a note must not skip to the next card on Space or Enter.
+  if (e.target.tagName === 'TEXTAREA' || draft) return;
   if ((e.key === 'Enter' || e.key === 'ArrowRight' || e.key === ' ') && !nextBtn.disabled) {
     e.preventDefault();
     next();
