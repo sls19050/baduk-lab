@@ -27,9 +27,16 @@ Three things have to be read out of those files:
    jump at N8 is very heavy" -- written on the node that played N8) and
    sometimes the position just before it ("black must ... atari at R7",
    written on White's move, about Black's reply). Both resolve the same
-   way: the mistake is the nearest move of *your* color at this node or the
-   next one. Across every annotated game tested, that rule picked the move
-   the note is actually discussing.
+   way by default: the mistake is the nearest move of *your* color at this
+   node or the next one. Across every annotated game tested, that rule
+   picked the move the note is actually discussing.
+
+   Some notes are about your *opponent's* move instead ("black can capture
+   the 2 stones at M2", written on your own move about Black's reply).
+   Those become cards too -- reading the position from the other side is
+   the same skill -- but only on evidence, because the default is right
+   almost every time and a note it misreads becomes a card whose answer
+   has nothing to do with what you wrote. See `_note_subject`.
 
 3. **The answer, and how bad the move was.** Two sources, in this order:
 
@@ -160,9 +167,9 @@ class AnnotatedMistake:
     """One comment you wrote, resolved to the move it is about."""
     game: str              # source SGF filename
     move_number: int       # the move your note is about (1-indexed)
-    color: str             # "b" or "w" -- your color in this game
+    color: str             # "b" or "w" -- the side that plays move_number
     note: str              # your own comment text, generated lines stripped
-    played: str            # the move you actually made, e.g. "S4"
+    played: str            # the move actually made there, e.g. "S4"
     best: str              # the answer to quiz against -- see _choose_best
     points_lost: float     # score cost of `played` vs the position before it
     winrate_drop: float    # winrate cost, 0-1 (what `points_lost` can miss)
@@ -173,6 +180,9 @@ class AnnotatedMistake:
     # A note sometimes discusses a point that is nobody's candidate here
     # ("the moyo at F7"), which is unreadable without seeing where it is.
     note_vertices: list[str] = field(default_factory=list)
+    # True when the note is about your opponent's move, so the card asks
+    # you to find *their* best move and `played` is what they played.
+    opponent: bool = False
 
     @property
     def problem_id(self) -> str:
@@ -325,12 +335,78 @@ def _node_eval(node) -> PositionEval | None:
     return None
 
 
-def _mistake_move_number(node_index: int, node_color: str | None, your_color: str) -> int:
+# A note whose first words make one side the subject: "black can invade
+# at H17", "White should have cut", "black is winning if he enters R3".
+# Possessives ("black's push") don't count -- they describe a stone, not
+# who the note is advising. This is only ever half the evidence: the note
+# must also name that side's best move (see `_note_subject`).
+_SUBJECT_RE = re.compile(
+    r"^\W*(?P<side>black|white)\s+(?:can|could|should|must|needs?|has to|"
+    r"had to|ought|is|was|would|will|may|might)\b", re.IGNORECASE)
+
+
+def _opens_with_side(note: str, color: str) -> bool:
+    match = _SUBJECT_RE.match(note)
+    return bool(match) and match.group("side")[0].lower() == color
+
+
+def _note_subject(sequence, node_index: int, your_color: str,
+                  note: str, note_vertices: list[str]) -> int:
     """Which move the note on node `node_index` is about. `node_index` is
-    also that node's move number (node 0 is the root), so a note on your
-    own move is about that move, and a note on your opponent's move is
-    about your reply to it."""
-    return node_index if node_color == your_color else node_index + 1
+    also that node's move number (node 0 is the root), so the only two
+    candidates are the move on this node and the reply to it.
+
+    By default it is the one of *your* color: a note on your own move is
+    about that move, a note on your opponent's move is about your reply.
+    The other candidate -- your opponent's move -- wins only on evidence:
+
+    1. **You played out a move there and named it.** "Black can capture at
+       M2", written on your move beside a variation where Black plays M2,
+       is you answering Black's question, not yours. It's the same evidence
+       `_choose_best` trusts for the answer, applied one step earlier.
+    2. **The note opens with that side as its subject and names KataGo's
+       pick for it** ("black can invade ... at H17", H17 being Black's best
+       move there). Either alone is too weak: possessives like "black's
+       wall" appear in notes about your own moves all the time, and a note
+       criticizing your D15 names D15 whether or not it suits Black.
+
+    When the default candidate carries evidence 1 too, it stands."""
+    default, other = _candidates(sequence, node_index, your_color)
+    if other >= len(sequence) or _played_out(sequence, default, note_vertices):
+        return default
+    if _has_evidence(sequence, other, note, note_vertices):
+        return other
+    return default
+
+
+def _candidates(sequence, node_index: int, your_color: str) -> tuple[int, int]:
+    """(default, other): the move of your color among this node's move and
+    the reply to it, then the remaining one."""
+    node_color, _ = sequence[node_index].get_move()
+    default = node_index if node_color == your_color else node_index + 1
+    other = node_index + 1 if default == node_index else node_index
+    return default, other
+
+
+def _played_out(sequence, move_number: int, note_vertices: list[str]) -> bool:
+    if move_number >= len(sequence):
+        return False
+    explored = _explored_moves(sequence[move_number - 1])
+    return any(v in explored for v in note_vertices)
+
+
+def _has_evidence(sequence, move_number: int, note: str,
+                  note_vertices: list[str]) -> bool:
+    """Evidence 1 or 2 of `_note_subject` that the note is about
+    `move_number`."""
+    if move_number >= len(sequence):
+        return False
+    if _played_out(sequence, move_number, note_vertices):
+        return True
+    color, _ = sequence[move_number].get_move()
+    before = _node_eval(sequence[move_number - 1])
+    return (color is not None and _opens_with_side(note, color)
+            and before is not None and before.best_move in note_vertices)
 
 
 @dataclass
@@ -354,7 +430,7 @@ class ResolvedNote:
 # Why a comment couldn't be drilled, in words the check command can print.
 SKIP_REASONS = {
     "past_end": "resolved to a move after the game's last one",
-    "not_your_move": "resolved to a move that isn't yours",
+    "not_a_move": "resolved to a pass, which has no point to quiz",
     "no_analysis": "no KataGo search stored on the position before it",
     "shadowed": "another comment already resolved to that same move",
 }
@@ -417,9 +493,10 @@ def resolve_notes(path: Path, player: str | Sequence[str]) -> NoteResolution | N
         if not note:
             continue
 
-        move_number = _mistake_move_number(index, node.get_move()[0], your_color)
+        move_number = _note_subject(sequence, index, your_color, note,
+                                    vertices_in(note, board_size))
         resolved = ResolvedNote(node_index=index, move_number=move_number, note=note)
-        reason = _skip_reason(record, sequence, move_number, your_color)
+        reason = _skip_reason(record, sequence, move_number)
         if reason is None:
             resolved.mistake = _build_mistake(
                 record, sequence, move_number, your_color, note)
@@ -429,12 +506,29 @@ def resolve_notes(path: Path, player: str | Sequence[str]) -> NoteResolution | N
 
     # A note on your move N and another on your opponent's move N-1 both
     # resolve to N; keep the first and drop the duplicate rather than
-    # quizzing the same position twice in one session.
+    # quizzing the same position twice in one session. Before dropping it,
+    # try the duplicate's other reading: two notes on one move is itself a
+    # hint that one is about the neighbouring move, so a note with evidence
+    # for that move (played out, or naming that side's best move with it as
+    # the subject) goes there instead of vanishing.
+    claimed = {n.move_number for n in resolution.notes if n.mistake is not None}
     seen = set()
     for resolved in resolution.notes:
         if resolved.mistake is None:
             continue
         if resolved.move_number in seen:
+            default, other = _candidates(sequence, resolved.node_index, your_color)
+            alt = other if resolved.move_number == default else default
+            if (alt not in claimed
+                    and _has_evidence(sequence, alt, resolved.note,
+                                      vertices_in(resolved.note, board_size))
+                    and _skip_reason(record, sequence, alt) is None):
+                resolved.move_number = alt
+                resolved.mistake = _build_mistake(
+                    record, sequence, alt, your_color, resolved.note)
+                claimed.add(alt)
+                seen.add(alt)
+                continue
             resolved.mistake = None
             resolved.skipped = "shadowed"
             continue
@@ -453,8 +547,7 @@ def _main_line_moves(sequence) -> list[Move]:
     return moves
 
 
-def _skip_reason(record: GameRecord, sequence, move_number: int,
-                 your_color: str) -> str | None:
+def _skip_reason(record: GameRecord, sequence, move_number: int) -> str | None:
     """A SKIP_REASONS key if this note can't be drilled, else None. Checked
     before building so the check command can report the same verdict the
     harvest reached, instead of only logging it and moving on."""
@@ -464,10 +557,10 @@ def _skip_reason(record: GameRecord, sequence, move_number: int,
         return "past_end"
 
     color, coord = sequence[move_number].get_move()
-    if color != your_color or coord is None:
-        logger.warning("%s: note resolved to move %d, which isn't a move of yours "
+    if color is None or coord is None:
+        logger.warning("%s: note resolved to move %d, which is a pass "
                        "-- skipping", record.path.name, move_number)
-        return "not_your_move"
+        return "not_a_move"
 
     before = _node_eval(sequence[move_number - 1])
     if before is None or before.best_move is None:
@@ -490,7 +583,7 @@ def _build_mistake(record: GameRecord, sequence, move_number: int, your_color: s
     """Resolve one note into a drillable problem. Call only on a note
     `_skip_reason` passed -- the move, its colour and the search on the
     position before it are all assumed to be there."""
-    _, coord = sequence[move_number].get_move()
+    mover, coord = sequence[move_number].get_move()
     before = _node_eval(sequence[move_number - 1])
     after = _node_eval(sequence[move_number])
 
@@ -501,7 +594,7 @@ def _build_mistake(record: GameRecord, sequence, move_number: int, your_color: s
     return AnnotatedMistake(
         game=record.path.name,
         move_number=move_number,
-        color=your_color,
+        color=mover,
         note=note,
         played=format_vertex(coord),
         best=best,
@@ -509,6 +602,7 @@ def _build_mistake(record: GameRecord, sequence, move_number: int, your_color: s
         winrate_drop=_winrate_drop(before, after),
         alternatives=alternatives,
         note_vertices=note_vertices,
+        opponent=mover != your_color,
     )
 
 

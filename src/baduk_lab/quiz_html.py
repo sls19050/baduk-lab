@@ -76,6 +76,7 @@ def render_quiz_html(due: list[ProblemIndexEntry], games: dict, out_path: Path,
             "winrateDrop": round(p.winrate_drop, 3),
             "alternatives": _coords(p.alternatives, board_size),
             "noteVertices": _coords(p.note_vertices, board_size),
+            "opponent": p.opponent,
         })
 
     payload = json.dumps(problems).replace("</", "<\\/")
@@ -309,7 +310,8 @@ function renderProblem() {
   metaEl.innerHTML = '';
   const tag = document.createElement('span');
   tag.className = p.source === 'note' ? 'tag note' : 'tag';
-  tag.textContent = p.source === 'note' ? 'your note' : 'katago';
+  tag.textContent = p.source !== 'note' ? 'katago'
+    : p.opponent ? "your note · opponent's move" : 'your note';
   metaEl.appendChild(tag);
   metaEl.appendChild(document.createTextNode(
     `${p.game} · move ${p.moveNumber} · ${p.phase} · ${cost} · ` +

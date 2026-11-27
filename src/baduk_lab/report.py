@@ -305,6 +305,9 @@ class ProblemIndexEntry:
     # move you played as often as the one you should have).
     alternatives: list[str] = field(default_factory=list)
     note_vertices: list[str] = field(default_factory=list)
+    # A note about your opponent's move: the card asks for their best move,
+    # and `played` is what they played rather than what you did.
+    opponent: bool = False
 
 
 def export_problem_index(problems: list[metrics.ProblemPosition], out_dir: Path) -> Path:
@@ -358,9 +361,11 @@ def export_note_sgfs(mistakes: list[AnnotatedMistake], out_dir: Path,
             record, move_number=mistake.move_number, played=mistake.played,
             best=mistake.best,
             header=(f"From {mistake.game}, move {mistake.move_number}. "
-                    f"{'Black' if mistake.color == 'b' else 'White'} to play.\n\n"
+                    f"{'Black' if mistake.color == 'b' else 'White'} to play"
+                    f"{' (your opponent)' if mistake.opponent else ''}.\n\n"
                     f"Your note: {mistake.note}"),
-            played_comment=(f"What you actually played "
+            played_comment=(f"What {'your opponent' if mistake.opponent else 'you'} "
+                            f"actually played "
                             f"({mistake.points_lost:.1f} points, "
                             f"{mistake.winrate_drop:.0%} winrate lost)."),
             best_comment=("The move your note names, which you played out "
@@ -396,6 +401,7 @@ def export_note_index(mistakes: list[AnnotatedMistake], out_dir: Path) -> Path:
             path=_note_relpath(m), played=m.played, best=m.best,
             source="note", note=m.note, winrate_drop=m.winrate_drop,
             alternatives=m.alternatives, note_vertices=m.note_vertices,
+            opponent=m.opponent,
         )
         for m in mistakes
     ]

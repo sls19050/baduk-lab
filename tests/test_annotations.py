@@ -485,6 +485,123 @@ def test_the_move_you_played_is_never_treated_as_explored(tmp_path):
     assert "C17" not in mistake.alternatives
 
 
+# --- notes about your opponent's move ---------------------------------
+#
+# "black can capture the 2 stones at M2", written on your own move, is
+# about your opponent's reply. Reading the board from their side is the
+# same skill, so those become cards too -- but only on evidence.
+
+def test_a_played_out_opponent_reply_your_note_names_makes_an_opponent_card(tmp_path):
+    """You played out White's E15 from your own move 3 and wrote that
+    White can capture there: the card asks for White's move 4."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move R7 visits 900 scoreMean 2.0")),
+        _branch("B", "cc", _lz(50.0, 2.0, "move R7 visits 9000 scoreMean 2.0"),
+                _engine_comment("got lucky, but actually white can capture at E15."),
+                real="dd", explored=["ee"],
+                tail_lz=_lz(40.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert mistake.move_number == 4
+    assert mistake.opponent is True
+    assert mistake.color == "w"
+    assert mistake.played == "D16"   # what White really played
+    assert mistake.best == "E15"     # the line you played out for White
+
+
+def test_a_note_opening_with_your_opponent_and_naming_their_best_move(tmp_path):
+    """No variation, but "white can invade at R7" names White's own best
+    move there, with White as the subject: an opponent card."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move D4 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(40.0, 1.0, "move R7 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("White can invade at R7. that's why J15 mattered.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "R7")
+
+
+def test_an_evaluative_opening_counts_as_the_subject_too(tmp_path):
+    """"black is winning a bit if he enters R3" is about Black's move just
+    as much as "black can enter R3" is."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move D4 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(40.0, 1.0, "move R7 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("white is winning a bit if he enters R7.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "R7")
+
+
+def test_a_colliding_note_with_evidence_for_the_reply_becomes_an_opponent_card(tmp_path):
+    """Two notes land on your move 3 -- one on White's move 2 about your
+    reply, one on your own move 3 that also names a line you explored at
+    move 3. Rather than dropping the second as a duplicate, its other
+    reading wins: you played White's E15 out from move 3 and named it."""
+    tail = _lz(40.0, 1.0, "move D4 visits 900 scoreMean 1.0")
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        ";W[bb]LZ[" + _lz(50.0, 2.0, "move R7 visits 9000 scoreMean 2.0") + "]"
+        "C[" + _engine_comment("C17 was slow.") + "]"
+        "(;B[cc]LZ[" + _lz(50.0, 2.0, "move E15 visits 9000 scoreMean 2.0") + "]"
+        "C[" + _engine_comment("E15 is the key for white, so my F14 idea fails.") + "]"
+        f"({_move_node('W', 'dd', lz=tail)})({_move_node('W', 'ee', lz=tail)}))"
+        f"({_move_node('B', 'ff', lz=tail)})",
+    ])
+
+    mistakes = annotations.mistakes_from_sgf(path, PLAYER)
+
+    assert [(m.move_number, m.opponent) for m in mistakes] == [(3, False), (4, True)]
+    assert mistakes[1].best == "E15"
+
+
+@pytest.mark.parametrize("note", [
+    # The opponent as subject, but the point isn't their best move.
+    "White can invade at Q3.",
+    # Their best move, but only as a possessive -- a stone, not advice.
+    "White's invasion at R7 is the threat, so C17 was wrong.",
+])
+def test_weaker_hints_leave_the_note_on_your_own_move(tmp_path, note):
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move D4 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(40.0, 1.0, "move R7 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment(note)),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent) == (3, False)
+
+
+def test_a_played_out_line_for_your_own_move_keeps_the_default(tmp_path):
+    """The common case must not move: a note on White's stone naming the
+    reply you played out for yourself is about your reply."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _branch("W", "bb", _lz(50.0, 2.0, "move R7 visits 9000 scoreMean 2.0"),
+                _engine_comment("black must cut at D16 first."),
+                real="cc", explored=["dd"],
+                tail_lz=_lz(40.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.color) == (3, False, "b")
+
+
 # --- points named in a note -------------------------------------------
 
 def test_vertices_in_reads_the_points_a_note_names():

@@ -342,6 +342,14 @@ A few details worth knowing:
   written on White's move, about Black's reply). Both resolve the same
   way: the mistake is the nearest move of *your* color at that node or the
   next one.
+- **Notes about your opponent's move become cards too.** "black can
+  capture the 2 stones at M2", written on your own move, is about Black's
+  reply -- so the card asks you to find Black's move, tagged *opponent's
+  move* in the quiz. That only happens on evidence, since the rule above
+  is right almost every time: either you played the move out as a
+  variation and your note names it, or the note opens with that side as
+  its subject ("black can invade at H17") and names KataGo's top pick for
+  it.
 - **Your note is the explanation, not the prompt.** The quiz shows you the
   position and asks for the move; your note appears on reveal, next to
   KataGo's answer.

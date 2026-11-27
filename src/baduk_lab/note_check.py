@@ -133,16 +133,16 @@ def _vertex_owner(occupied: dict, vertex: str) -> str | None:
 
 
 def _worst_own_move_near(resolution: annotations.NoteResolution,
-                         move_number: int) -> tuple[int | None, float]:
-    """(move, points lost) for your own costliest move within
-    NEARBY_RADIUS of `move_number`, ignoring the move itself."""
+                         move_number: int, color: str) -> tuple[int | None, float]:
+    """(move, points lost) for `color`'s costliest move within
+    NEARBY_RADIUS of `move_number`, ignoring the move itself -- your own
+    moves, or your opponent's when the note is about theirs."""
     sequence = resolution.sequence
     worst_move, worst_cost = None, 0.0
     for candidate in range(move_number - NEARBY_RADIUS, move_number + NEARBY_RADIUS + 1):
         if candidate == move_number or not 1 <= candidate < len(sequence):
             continue
-        color, _ = sequence[candidate].get_move()
-        if color != resolution.your_color:
+        if sequence[candidate].get_move()[0] != color:
             continue
         before = annotations._node_eval(sequence[candidate - 1])
         after = annotations._node_eval(sequence[candidate])
@@ -168,7 +168,8 @@ def _classify(resolved: annotations.ResolvedNote,
     if any(vertex in answers for vertex in named):
         return None
 
-    nearby_move, nearby_points = _worst_own_move_near(resolution, mistake.move_number)
+    nearby_move, nearby_points = _worst_own_move_near(
+        resolution, mistake.move_number, mistake.color)
     issue = NoteIssue(
         game=mistake.game, move_number=mistake.move_number, rule="",
         note=mistake.note, played=mistake.played, answers=answers, named=named,
