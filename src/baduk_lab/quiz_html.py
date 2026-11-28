@@ -239,7 +239,12 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="done" hidden>
   <h2>Session complete</h2>
   <p id="doneSummary"></p>
-  <button id="restartBtn">Restart this set</button>
+  <div class="actions" style="justify-content:center;">
+    <button id="nextSetBtn" class="primary">Next set &rarr;</button>
+    <button id="practiceSetBtn">Practice set (any card)</button>
+    <button id="restartBtn">Restart this set</button>
+  </div>
+  <p id="newSetStatus" class="edit-status"></p>
 </div>
 
 <script>
@@ -698,6 +703,42 @@ document.getElementById('restartBtn').addEventListener('click', () => {
   renderProblem();
 });
 
+// A new set is picked by the server -- it re-reads your games, so comments
+// added since this page loaded show up -- and written over quiz.html; the
+// page then reloads into it. "Next set" is what spaced repetition says is
+// due; "Practice set" is any card, worst first, skipping ones already shown
+// this sitting.
+async function newSet(ignoreDue) {
+  const statusEl = document.getElementById('newSetStatus');
+  const buttons = ['nextSetBtn', 'practiceSetBtn'].map(id => document.getElementById(id));
+  buttons.forEach(b => b.disabled = true);
+  statusEl.classList.remove('bad');
+  statusEl.textContent = 'Picking the next set…';
+  try {
+    const res = await fetch('/new-set', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ignoreDue}),
+    });
+    const body = await res.json();
+    if (!body.ok) throw new Error(body.error);
+    if (body.count === 0) {
+      statusEl.textContent = ignoreDue
+        ? 'No cards left to practise.'
+        : 'Nothing else is due right now. Try a practice set.';
+      buttons.forEach(b => b.disabled = false);
+      return;
+    }
+    location.replace('/quiz.html?set=' + Date.now());
+  } catch (err) {
+    statusEl.classList.add('bad');
+    statusEl.textContent = 'Could not start a new set: ' + err.message;
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+document.getElementById('nextSetBtn').addEventListener('click', () => newSet(false));
+document.getElementById('practiceSetBtn').addEventListener('click', () => newSet(true));
+
 async function saveResult(problemId, correct) {
   try {
     const res = await fetch('/quiz-state', {
@@ -727,6 +768,7 @@ if (DATA.length === 0) {
   document.getElementById('done').hidden = false;
   document.getElementById('doneSummary').textContent = 'Nothing due right now. Nice.';
   document.getElementById('restartBtn').hidden = true;
+  document.getElementById('nextSetBtn').hidden = true;
 } else {
   renderProblem();
 }

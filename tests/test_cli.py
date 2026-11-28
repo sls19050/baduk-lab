@@ -1,3 +1,7 @@
+import functools
+
+import pytest
+
 from datetime import date
 
 from baduk_lab.cli import (_order_session, _resolve_problem_sgf_path,
@@ -96,3 +100,81 @@ def test_select_problems_ignore_due_still_puts_your_own_notes_first():
     picked = _select_problems(deck, {}, TODAY, ignore_due=True)
 
     assert [p.source for p in picked] == ["note", "katago"]
+
+
+# --- "Next set" / "Practice set" from the quiz page --------------------
+
+import argparse
+
+from baduk_lab import cli
+
+
+@pytest.fixture
+def new_set_env(tmp_path, monkeypatch):
+    """A five-card deck, two of them due; rendering is recorded rather
+    than written, and re-harvesting is a no-op."""
+    deck = [_entry(f"note::g::m{i}", "note", float(i)) for i in range(1, 6)]
+    state = {p.problem_id: {"next_due": "2026-12-05"} for p in deck}
+    state["note::g::m1"]["next_due"] = state["note::g::m2"]["next_due"] = "2026-11-01"
+    rendered = []
+    monkeypatch.setattr(cli, "_reharvest_notes", lambda out_dir: None)
+    monkeypatch.setattr(cli, "_load_session",
+                        lambda out_dir, source, phase, today: (deck, {}, state))
+    monkeypatch.setattr(cli.report, "load_game_records", lambda d: {})
+    monkeypatch.setattr(cli.quiz_html, "render_quiz_html",
+                        lambda due, games, out, today, originals:
+                        rendered.append([p.problem_id for p in due]))
+    args = argparse.Namespace(source="note", phase=None, limit=2)
+    return args, tmp_path, rendered
+
+
+def test_next_set_asks_what_is_due_and_not_already_shown(new_set_env):
+    args, out_dir, rendered = new_set_env
+    new_set = cli._new_set_maker(args, out_dir, served={"note::g::m2"})
+
+    assert new_set(False) == 1
+    assert rendered == [["note::g::m1"]]
+
+
+def test_next_set_with_nothing_due_leaves_the_page_alone(new_set_env):
+    args, out_dir, rendered = new_set_env
+    new_set = cli._new_set_maker(args, out_dir, served={"note::g::m1", "note::g::m2"})
+
+    assert new_set(False) == 0
+    assert rendered == []
+
+
+def test_practice_sets_move_on_through_the_deck_then_start_over(new_set_env):
+    """Worst first, but never the set you just did -- otherwise every
+    practice set would be the same top cards."""
+    args, out_dir, rendered = new_set_env
+    new_set = cli._new_set_maker(args, out_dir, served=set())
+
+    for _ in range(4):
+        new_set(True)
+
+    assert rendered == [["note::g::m5", "note::g::m4"], ["note::g::m3", "note::g::m2"],
+                        ["note::g::m1"], ["note::g::m5", "note::g::m4"]]
+
+
+def test_the_server_route_runs_the_new_set(tmp_path):
+    import http.server, json, threading, urllib.request
+    calls = []
+    cli._QuizRequestHandler.new_set = lambda ignore_due: calls.append(ignore_due) or 7
+    handler = functools.partial(cli._QuizRequestHandler, directory=str(tmp_path))
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/new-set",
+            data=json.dumps({"ignoreDue": True}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req) as res:
+            body = json.loads(res.read())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        cli._QuizRequestHandler.new_set = None
+
+    assert body == {"ok": True, "count": 7}
+    assert calls == [True]

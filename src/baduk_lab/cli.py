@@ -370,33 +370,13 @@ def _run_notes(args: argparse.Namespace) -> None:
         print(note_check.format_report(examined, issues))
         return
 
-    mistakes = annotations.harvest_folder(folder, player_aliases)
-    if not mistakes:
+    out_dir = Path(args.out)
+    harvested = _harvest_notes(folder, player_aliases, out_dir)
+    if harvested is None:
         sys.exit(f"No commented mistakes found in {folder}. Comments are read from "
                  "each SGF's own C[] nodes, minus the lines your reviewer "
                  "generates into them.")
-
-    # Only the games a note actually landed in need their moves exported;
-    # the quiz redraws each board from these, not from the source folder.
-    records = {}
-    for name in {m.game for m in mistakes}:
-        path = next(p for p in folder.rglob("*.sgf") if p.name == name)
-        board_size, moves = annotations.moves_of(path)
-        records[name] = GameRecord(path=path, board_size=board_size, komi=0.0,
-                                   player_black="", player_white="", result="",
-                                   moves=moves)
-
-    out_dir = Path(args.out)
-    problems_dir = out_dir / "problems"
-    report.export_note_sgfs(mistakes, problems_dir, records)
-    index_path = report.export_note_index(mistakes, problems_dir)
-    report.export_note_game_records(records, problems_dir)
-
-    state_path = out_dir / "quiz_state.json"
-    state = quiz.load_state(state_path)
-    quiz.sync_new_problems(state, mistakes, date.today())
-    dropped = quiz.drop_missing(state, mistakes, prefix="note::")
-    quiz.save_state(state_path, state)
+    mistakes, records, index_path, dropped = harvested
 
     logger.info("%d commented mistake(s) across %d game(s) -> %s",
                 len(mistakes), len(records), index_path)
@@ -411,6 +391,39 @@ def _run_notes(args: argparse.Namespace) -> None:
                     "`baduk-lab notes --check` to see which.", len(issues))
     logger.info("Run `baduk-lab review --source note --html --out %s` to drill them.",
                 out_dir)
+
+
+def _harvest_notes(folder: Path, player_aliases: list[str], out_dir: Path):
+    """Turn every comment in `folder` into a note problem under `out_dir`,
+    keeping the review progress already in quiz_state.json. Returns
+    (mistakes, records, index_path, dropped state keys), or None if there
+    are no comments at all. Shared by `notes` and the quiz page's "Next
+    set", which re-harvests so comments added mid-sitting show up."""
+    mistakes = annotations.harvest_folder(folder, player_aliases)
+    if not mistakes:
+        return None
+
+    # Only the games a note actually landed in need their moves exported;
+    # the quiz redraws each board from these, not from the source folder.
+    records = {}
+    for name in {m.game for m in mistakes}:
+        path = next(p for p in folder.rglob("*.sgf") if p.name == name)
+        board_size, moves = annotations.moves_of(path)
+        records[name] = GameRecord(path=path, board_size=board_size, komi=0.0,
+                                   player_black="", player_white="", result="",
+                                   moves=moves)
+
+    problems_dir = out_dir / "problems"
+    report.export_note_sgfs(mistakes, problems_dir, records)
+    index_path = report.export_note_index(mistakes, problems_dir)
+    report.export_note_game_records(records, problems_dir)
+
+    state_path = out_dir / "quiz_state.json"
+    state = quiz.load_state(state_path)
+    quiz.sync_new_problems(state, mistakes, date.today())
+    dropped = quiz.drop_missing(state, mistakes, prefix="note::")
+    quiz.save_state(state_path, state)
+    return mistakes, records, index_path, dropped
 
 
 def _run_tidy(args: argparse.Namespace) -> None:
@@ -500,8 +513,14 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
     `harvested` is each served card as the deck file has it, before any
     edit, so the first edit can record what it replaced.
 
+    POST /new-set {"ignoreDue": bool} rewrites quiz.html with the next set
+    -- what is due, or with ignoreDue any card -- so the page can reload
+    into it without a new server. `new_set` does the work (see
+    `_new_set_maker`) and returns how many problems it put on the page.
+
     All class attributes are set once in _serve_and_open before the server
-    starts -- this process only ever runs one review session at a time."""
+    starts -- this process only ever runs one review session at a time.
+    `harvested` is the exception: each new set replaces it."""
     problems_dir: Path | None = None
     lizzieyzy_exe: Path | None = None
     lizzieyzy_proc: subprocess.Popen | None = None
@@ -509,12 +528,20 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
     state_lock = threading.Lock()
     edits_path: Path | None = None
     harvested: dict = {}
+    new_set = None   # Callable[[bool], int] | None
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/open-lizzie":
             self._handle_open_lizzie()
             return
         super().do_GET()
+
+    def end_headers(self) -> None:
+        # quiz.html is rewritten in place by /new-set; a cached copy would
+        # reload into the set you just finished.
+        if urlparse(self.path).path.endswith(".html"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def do_POST(self) -> None:
         if urlparse(self.path).path == "/quiz-state":
@@ -523,7 +550,29 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
         if urlparse(self.path).path == "/card-edit":
             self._handle_card_edit()
             return
+        if urlparse(self.path).path == "/new-set":
+            self._handle_new_set()
+            return
         self.send_error(404)
+
+    def _handle_new_set(self) -> None:
+        if self.new_set is None:
+            self._json(400, {"ok": False, "error": "New sets are not enabled here."})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError as exc:
+            self._json(400, {"ok": False, "error": f"Bad request: {exc}"})
+            return
+        try:
+            with self.state_lock:
+                count = type(self).new_set(bool(body.get("ignoreDue")))
+        except Exception as exc:   # report it on the page, keep serving
+            logger.exception("New set failed")
+            self._json(500, {"ok": False, "error": str(exc)})
+            return
+        self._json(200, {"ok": True, "count": count})
 
     def _handle_card_edit(self) -> None:
         if self.edits_path is None:
@@ -618,7 +667,8 @@ class _QuizRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path: Path,
-                    edits_path: Path | None = None, harvested: dict | None = None) -> None:
+                    edits_path: Path | None = None, harvested: dict | None = None,
+                    new_set=None) -> None:
     """Serve out_dir on 127.0.0.1 and open filename in the default browser.
 
     quiz.html grades each answer via a fetch() POST to /quiz-state on this
@@ -635,6 +685,7 @@ def _serve_and_open(out_dir: Path, problems_dir: Path, filename: str, state_path
     _QuizRequestHandler.state_path = state_path
     _QuizRequestHandler.edits_path = edits_path
     _QuizRequestHandler.harvested = harvested or {}
+    _QuizRequestHandler.new_set = new_set
     handler = functools.partial(_QuizRequestHandler, directory=str(out_dir))
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
@@ -678,39 +729,94 @@ def _order_session(due: list[report.ProblemIndexEntry]) -> list[report.ProblemIn
     return sorted(due, key=lambda p: p.source != "note")
 
 
+def _load_session(out_dir: Path, source: str, phase: str | None, today: date):
+    """Every problem a review over `source` can ask, with your card edits
+    applied and new ones synced into quiz_state.json. Returns (problems,
+    harvested -- each card before any edit -- and state)."""
+    problems_dir = out_dir / "problems"
+    problems = []
+    if source in ("all", "katago") and (problems_dir / "index.json").exists():
+        problems += report.load_problem_index(problems_dir)
+    if source in ("all", "note"):
+        problems += report.load_note_index(problems_dir)
+    if phase:
+        problems = [p for p in problems if p.phase == phase]
+
+    # Your edits from the quiz page's "Edit card" win over the harvested
+    # answer and note, in both front ends.
+    harvested = {p.problem_id: p for p in problems}
+    problems = card_edits.apply(problems, card_edits.load(out_dir / card_edits.FILENAME))
+
+    state_path = out_dir / "quiz_state.json"
+    state = quiz.load_state(state_path)
+    quiz.sync_new_problems(state, problems, today)
+    quiz.save_state(state_path, state)
+    return problems, harvested, state
+
+
+def _new_set_maker(args: argparse.Namespace, out_dir: Path, served: set[str]):
+    """The quiz page's "Next set" / "Practice set": re-harvest your notes,
+    pick the next `--limit` problems with this server's own options, and
+    rewrite quiz.html with them. Returns how many it picked (0 = nothing
+    left, and the page is left as it was).
+
+    `served` is every problem already put on a page this sitting. They're
+    left out, or a practice set -- the whole deck, worst first -- would be
+    the same 20 every time; once every card has been served, it starts
+    over."""
+    problems_dir = out_dir / "problems"
+
+    def new_set(ignore_due: bool) -> int:
+        if args.source in ("all", "note"):
+            _reharvest_notes(out_dir)
+        today = date.today()
+        problems, harvested, state = _load_session(out_dir, args.source, args.phase, today)
+        candidates = _select_problems(problems, state, today, ignore_due=ignore_due)
+        fresh = [p for p in candidates if p.problem_id not in served]
+        if not fresh and ignore_due and candidates:
+            served.clear()
+            fresh = candidates
+        due = fresh[: args.limit]
+        if not due:
+            return 0
+        quiz_html.render_quiz_html(due, report.load_game_records(problems_dir),
+                                   out_dir / "quiz.html", today, originals=harvested)
+        served.update(p.problem_id for p in due)
+        _QuizRequestHandler.harvested = harvested
+        return len(due)
+
+    return new_set
+
+
+def _reharvest_notes(out_dir: Path) -> None:
+    """`notes` with config.toml's folder and aliases, for a new set mid-
+    sitting. Skipped (keeping the deck as it is) when config.toml doesn't
+    say where your games are -- the deck on disk is still fine to drill."""
+    aliases = config.player_aliases()
+    folder = config.annotations_folder()
+    if not aliases or folder is None or not folder.is_dir():
+        logger.info("No [annotations] folder/[player] in config.toml -- "
+                    "drilling the deck as it is.")
+        return
+    _harvest_notes(folder, aliases, out_dir)
+
+
 def _run_review(args: argparse.Namespace) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     out_dir = Path(args.out)
     problems_dir = out_dir / "problems"
-
-    problems = []
-    if args.source in ("all", "katago") and (problems_dir / "index.json").exists():
-        problems += report.load_problem_index(problems_dir)
-    if args.source in ("all", "note"):
-        problems += report.load_note_index(problems_dir)
-    if not problems:
+    today = date.today()
+    problems, harvested, state = _load_session(out_dir, args.source, args.phase, today)
+    if not problems and not args.phase:
         sys.exit(f"No problems found in {problems_dir}. Run `baduk-lab analyze` "
                  "(KataGo's own finds) or `baduk-lab notes` (the mistakes you "
                  "commented on yourself) first.")
-
-    if args.phase:
-        problems = [p for p in problems if p.phase == args.phase]
-
-    # Your edits from the quiz page's "Edit card" win over the harvested
-    # answer and note, in both front ends.
-    harvested = {p.problem_id: p for p in problems}
-    edits_path = out_dir / card_edits.FILENAME
-    problems = card_edits.apply(problems, card_edits.load(edits_path))
-
     state_path = out_dir / "quiz_state.json"
-    state = quiz.load_state(state_path)
-    today = date.today()
-    quiz.sync_new_problems(state, problems, today)
+    edits_path = out_dir / card_edits.FILENAME
 
     due = _select_problems(problems, state, today,
                            ignore_due=args.ignore_due)[: args.limit]
-    quiz.save_state(state_path, state)
 
     if args.html:
         if not due:
@@ -725,8 +831,10 @@ def _run_review(args: argparse.Namespace) -> None:
         quiz_html.render_quiz_html(due, games, out_dir / "quiz.html", today,
                                    originals=harvested)
         print(f"{len(due)} problem(s) ready.")
+        served = {p.problem_id for p in due}
         _serve_and_open(out_dir, problems_dir, "quiz.html", state_path,
-                        edits_path=edits_path, harvested=harvested)
+                        edits_path=edits_path, harvested=harvested,
+                        new_set=_new_set_maker(args, out_dir, served))
         return
 
     if not due:

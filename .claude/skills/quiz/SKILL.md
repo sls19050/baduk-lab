@@ -78,6 +78,14 @@ checking before blaming a note:
   The two disagree on about one position in seven. If an answer looks
   absurd, read the `LZ[]` payload before assuming the note is misplaced.
 
+## Another set
+
+The user doesn't need a new server for another set. At the end of a set
+the page offers **Next set** (what's due) and **Practice set** (any card,
+worst first, skipping what this server already showed). Either one
+re-harvests their notes and reloads the page into the new set. Only
+restart the server when the code changed under it.
+
 ## Nothing due, or going over a game again
 
 Spaced repetition hides a problem once it is answered, so a run right
