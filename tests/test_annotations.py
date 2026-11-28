@@ -544,6 +544,86 @@ def test_an_evaluative_opening_counts_as_the_subject_too(tmp_path):
     assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "R7")
 
 
+def test_a_lead_in_clause_before_the_subject_still_counts(tmp_path):
+    """"to avoid a tight seal, black must hane at F19" opens with a clause,
+    but Black is still the subject -- and F19 Black's best move."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move D4 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(40.0, 1.0, "move R7 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("to avoid a tight seal, white must hane at R7.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "R7")
+
+
+def test_a_note_on_your_best_move_naming_their_best_reply_is_about_their_reply(tmp_path):
+    """Your move 3 (C17) was KataGo's own pick, so there is no mistake of
+    yours to drill; the note names White's best reply Q3 with no subject
+    at all -- it is advice for White."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move C17 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("first attach at Q3 and then live.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "Q3")
+
+
+def test_a_note_on_your_best_move_with_them_as_subject_is_about_their_reply(tmp_path):
+    """Your move 3 (C17) was KataGo's pick, and "white can still connect"
+    names no point -- but White is the subject, so it's White's move."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move C17 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("white can still connect and black is not settled.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent, mistake.best) == (4, True, "Q3")
+
+
+def test_your_side_as_subject_on_your_best_move_stays_on_your_move(tmp_path):
+    """"black can still connect" on Black's own best move is about Black."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move C17 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(50.0, 1.0, "move Q3 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("black can still connect.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent) == (3, False)
+
+
+def test_naming_their_best_reply_after_your_mistake_stays_on_your_move(tmp_path):
+    """The same note, but your move 3 wasn't KataGo's pick: the note may
+    well be explaining your mistake, so the default stands."""
+    path = _write_sgf(tmp_path, [
+        _move_node("B", "aa", lz=_lz(50.0, 1.0, "move Q16 visits 900 scoreMean 1.0")),
+        _move_node("W", "bb", lz=_lz(50.0, 2.0, "move R7 visits 900 scoreMean 2.0")),
+        _move_node("B", "cc", lz=_lz(40.0, 1.0, "move Q3 visits 900 scoreMean 1.0"),
+                   comment=_engine_comment("first attach at Q3 and then live.")),
+        _move_node("W", "dd", lz=_lz(50.0, 1.0, "move D4 visits 900 scoreMean 1.0")),
+    ])
+
+    mistake = annotations.mistakes_from_sgf(path, PLAYER)[0]
+
+    assert (mistake.move_number, mistake.opponent) == (3, False)
+
+
 def test_a_colliding_note_with_evidence_for_the_reply_becomes_an_opponent_card(tmp_path):
     """Two notes land on your move 3 -- one on White's move 2 about your
     reply, one on your own move 3 that also names a line you explored at

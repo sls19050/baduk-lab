@@ -337,11 +337,15 @@ def _node_eval(node) -> PositionEval | None:
 
 # A note whose first words make one side the subject: "black can invade
 # at H17", "White should have cut", "black is winning if he enters R3".
-# Possessives ("black's push") don't count -- they describe a stone, not
-# who the note is advising. This is only ever half the evidence: the note
-# must also name that side's best move (see `_note_subject`).
+# A short lead-in clause before the subject counts too: "to avoid a tight
+# seal, black must hane at F19" is as much about Black's move as "black
+# must hane at F19". Possessives ("black's push") don't count -- they
+# describe a stone, not who the note is advising. This is only ever half
+# the evidence: the note must also name that side's best move (see
+# `_note_subject`).
 _SUBJECT_RE = re.compile(
-    r"^\W*(?P<side>black|white)\s+(?:can|could|should|must|needs?|has to|"
+    r"^\W*(?:[^,.;:!?]*,\s*)?"
+    r"(?P<side>black|white)\s+(?:can|could|should|must|needs?|has to|"
     r"had to|ought|is|was|would|will|may|might)\b", re.IGNORECASE)
 
 
@@ -370,13 +374,43 @@ def _note_subject(sequence, node_index: int, your_color: str,
        wall" appear in notes about your own moves all the time, and a note
        criticizing your D15 names D15 whether or not it suits Black.
 
+    3. **Your move was KataGo's pick, and the note either names theirs or
+       makes them the subject.** "first attach at N3 and then live with
+       G2", written on your move M3 that KataGo itself chose, with N3
+       Black's best reply; or "black can still connect", written on your
+       C3 that KataGo chose. There is no mistake of yours for the note to
+       be about, so the board supplies the other half of the evidence that
+       the words alone don't.
+
     When the default candidate carries evidence 1 too, it stands."""
     default, other = _candidates(sequence, node_index, your_color)
     if other >= len(sequence) or _played_out(sequence, default, note_vertices):
         return default
     if _has_evidence(sequence, other, note, note_vertices):
         return other
+    if _played_best(sequence, default) and (
+            _best_named(sequence, other, note_vertices)
+            or _opens_with_side(note, sequence[other].get_move()[0] or "")):
+        return other
     return default
+
+
+def _played_best(sequence, move_number: int) -> bool:
+    """Whether the move played at `move_number` was KataGo's own pick."""
+    if move_number >= len(sequence):
+        return False
+    color, coord = sequence[move_number].get_move()
+    before = _node_eval(sequence[move_number - 1])
+    return (coord is not None and before is not None
+            and before.best_move == format_vertex(coord))
+
+
+def _best_named(sequence, move_number: int, note_vertices: list[str]) -> bool:
+    """Whether the note names KataGo's pick for `move_number`."""
+    if move_number >= len(sequence):
+        return False
+    before = _node_eval(sequence[move_number - 1])
+    return before is not None and before.best_move in note_vertices
 
 
 def _candidates(sequence, node_index: int, your_color: str) -> tuple[int, int]:
